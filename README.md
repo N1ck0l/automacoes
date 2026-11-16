@@ -18,7 +18,7 @@ banimento de chip pela Meta.
 | `prospeccao.example.csv` | Modelo de cabeçalho do CSV de contatos (o `prospeccao.csv` real fica fora do Git) |
 | `dashboard.py` | Dashboard Streamlit do `prospeccao.csv` (KPIs, gráficos, filtros e tabela com links) |
 | `test_prospeccao.py` + `test_minerador.py` + `test_dashboard.py` | 175 testes do núcleo anti-ban, modo automático, mineração e métricas do dashboard |
-| `index.html` | Demonstração interativa para enviar ao cliente (é a página do GitHub Pages): simulação da triagem no WhatsApp + comparação NF-e + CTA |
+| `index.html` | Demonstração interativa para enviar ao cliente (é a página do GitHub Pages): simulação da triagem no WhatsApp + comparação NFS-e + CTA |
 | `demonstracao.pdf` | Resumo de 1 página da demonstração (print da simulação + CTA) — anexado automaticamente na 2ª etapa (apresentação/resumo), quando a clínica responde; gerado pelo `gerar_demo_pdf.py` |
 | `gerar_demo_pdf.py` | Regenera `demonstracao.pdf` a partir do `index.html` (requer `reportlab` + Playwright) |
 | `logs/` | Log diário do modo automático (`automatico_AAAA-MM-DD.log`) |
@@ -216,8 +216,8 @@ apresentações):
 3. Confere as entregas, lê as respostas, executa as ações automáticas (abaixo)
    e manda um **resumo para o seu WhatsApp** (`--resumo-para`).
 
-Começa às **10h30** + um atraso sorteado de 0 a `--atraso-max` minutos (fora do
-pico da recepção, que é logo cedo).
+Começa às **9h** + um atraso sorteado de 0 a `--atraso-max` minutos (para não
+enviar sempre no mesmo minuto).
 
 **Teste A/B** (coluna `variante`, fixa por número, metade para cada lado):
 - `curta`: uma apresentação de duas linhas dizendo o que é oferecido e
@@ -253,7 +253,7 @@ Agendado como **"Prospeccao Acompanhamento"** às 12h, 14h, 16h e 18h (dias
 - **avisa na hora** (seu WhatsApp + Windows) quando uma **pessoa** responde,
   com o trecho da resposta — para você assumir a conversa rápido;
 - envia a 2ª etapa para quem respondeu (**apresentação** na curta, **resumo**
-  na completa). **Não contam no limite diário** — senão o envio das 10h30
+  na completa). **Não contam no limite diário** — senão o envio das 9h
   esgotaria a cota e a resposta ficaria adiada; têm um teto próprio igual a
   `--limite-dia` por dia;
 - em robôs com menu, escolhe a opção **"falar com atendente"** (uma vez por
@@ -270,7 +270,7 @@ Agendado como **"Prospeccao Acompanhamento"** às 12h, 14h, 16h e 18h (dias
 
 | Tarefa | Quando |
 |---|---|
-| "Prospeccao WhatsApp" | Seg–sex, 10h30 (+0 a 40 min) |
+| "Prospeccao WhatsApp" | Seg–sex, 9h (+0 a 40 min) |
 | "Prospeccao Acompanhamento" | Seg–sex, 12h, 14h, 16h, 18h |
 | "Prospeccao Minerador" | Segundas, 7h30 |
 

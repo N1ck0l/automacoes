@@ -577,7 +577,7 @@ def ler_historico() -> list[dict]:
 
 # Fora do limite diário: escolher "falar com atendente" no robô e a 2ª etapa
 # (apresentação/resumo), que só vai para quem respondeu. Se contasse, o envio
-# das 10h30 esgotaria a cota e a resposta a quem falou com a gente ficaria
+# das 9h esgotaria a cota e a resposta a quem falou com a gente ficaria
 # adiada dia após dia. A 2ª etapa tem um teto próprio (segundas_etapas_hoje).
 SEGUNDAS_ETAPAS = {"apresentacao", "resumo"}
 TIPOS_FORA_DO_LIMITE = {"menu", "despedida"} | SEGUNDAS_ETAPAS
