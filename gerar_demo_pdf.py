@@ -41,8 +41,8 @@ def capturar_celular() -> Path:
         # A animação do chat só começa quando #conversa entra na tela
         # (IntersectionObserver); sem este scroll o celular ficava vazio.
         pagina.locator("#conversa").scroll_into_view_if_needed()
-        # Espera determinística: #painelResumo perde "escondido" no fim da animação.
-        pagina.wait_for_selector("#painelResumo:not(.escondido)", timeout=45000)
+        # Espera determinística: #painelResumo ganha "completo" no fim da animação.
+        pagina.wait_for_selector("#painelResumo.completo", timeout=45000)
         pagina.evaluate("document.getElementById('conversa').scrollTop = 0")
         pagina.wait_for_timeout(300)
         pagina.locator(".celular").screenshot(path=str(destino))
@@ -80,7 +80,7 @@ def main() -> None:
     c.setFont("Helvetica", 8.8)
     c.drawCentredString(
         W / 2, H - 18.2 * mm,
-        "Demonstração — triagem de pacientes pelo WhatsApp e emissão automática de NF-e")
+        "Demonstração — triagem de pacientes pelo WhatsApp e emissão automática de NFS-e")
     c.setFillColor(colors.HexColor("#a9bddb"))
     c.setFont("Helvetica", 7.5)
     c.drawCentredString(
@@ -175,15 +175,15 @@ def main() -> None:
     t_depois.drawOn(c, x_dir + col_w + 3 * mm, ty - h_d)
     y = min(ty - h_a, ty - h_d, y - img_h) - 11 * mm
 
-    # ---------------- etapa 2: NF-e ----------------
+    # ---------------- etapa 2: NFS-e ----------------
     c.setFillColor(DOURADO)
     c.setFont("Helvetica-Bold", 10.2)
     c.drawString(M, y, "02 ·")
     c.setFillColor(AZUL_ESC)
-    c.drawString(M + 8 * mm, y, "EMISSÃO DE NF-E E PÓS-ATENDIMENTO")
+    c.drawString(M + 8 * mm, y, "EMISSÃO DE NFS-E E PÓS-ATENDIMENTO")
     c.setStrokeColor(BORDA)
     c.setLineWidth(0.6)
-    c.line(M + 82 * mm, y + 1.2 * mm, W - M, y + 1.2 * mm)
+    c.line(M + 85 * mm, y + 1.2 * mm, W - M, y + 1.2 * mm)
     y -= 4.6 * mm
     p2 = par(
         "Os dados do atendimento já estão capturados: a nota deixa de ser manual "
@@ -206,7 +206,7 @@ def main() -> None:
         par("<b>1.</b> dados já capturados na triagem", 7.9),
         par("<b>2.</b> nota gerada em poucos minutos", 7.9),
         par("<b>3.</b> equipe confere e valida em 1 clique", 7.9),
-        par("<b>4.</b> NF-e enviada ao paciente no WhatsApp", 7.9),
+        par("<b>4.</b> NFS-e enviada ao paciente no WhatsApp", 7.9),
         [par("poucos minutos · validação em um clique", 7.9, AZUL, True)],
     ]
     t_manual = Table([[x] for x in manual], colWidths=[col2 - 8])
@@ -247,7 +247,7 @@ def main() -> None:
     passos = [
         par("<b>1. Demonstração</b><br/>conversa objetiva, online ou "
             "presencial (12h–13h, após 17h seg–qui ou 16h sex)", 8),
-        par("<b>2. Implantação</b><br/>configuração da triagem e da NF-e "
+        par("<b>2. Implantação</b><br/>configuração da triagem e da NFS-e "
             "conforme a rotina da clínica", 8),
         par("<b>3. Uso diário</b><br/>conversas organizadas na recepção e "
             "notas validadas em um clique", 8),
@@ -299,7 +299,7 @@ def main() -> None:
     c.drawCentredString(
         W / 2, 8 * mm,
         "Demonstração ilustrativa · Automações para clínicas · "
-        "Triagem pelo WhatsApp e emissão de NF-e")
+        "Triagem pelo WhatsApp e emissão de NFS-e")
 
     c.showPage()
     c.save()
@@ -314,6 +314,17 @@ def main() -> None:
             check=True,
         )
         print(f"Imagem gerada: {png_base}.png")
+    else:
+        # Sem o pdftoppm (Poppler), usa o PyMuPDF se estiver instalado.
+        try:
+            import pymupdf
+        except ImportError:
+            print("AVISO: demonstracao.png NÃO foi atualizada "
+                  "(instale o Poppler ou 'pip install pymupdf').")
+        else:
+            with pymupdf.open(str(SAIDA)) as doc:
+                doc[0].get_pixmap(dpi=180).save(str(SAIDA.with_suffix(".png")))
+            print(f"Imagem gerada: {SAIDA.with_suffix('.png')}")
 
 
 if __name__ == "__main__":

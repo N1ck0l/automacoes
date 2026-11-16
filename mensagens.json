@@ -1,5 +1,5 @@
 {
-  "_ajuda": "Textos da prospecção. Tokens: {clinica} {a_clinica} {da_clinica} {bairro} {cidade} {local} {nota} {saudacao} {gancho} {autoridade} {case} {cta}. Spintax: {opção A|opção B}. {local} vira 'no <bairro>' ou, sem bairro, 'em <cidade>'. {nota} é a nota do Google (ex.: '4,9') e só existe se for 4,5 ou mais: textos com {nota} só são usados nesses casos. Tom: SEMPRE formal e profissional (sem diminutivos, emojis ou gírias), sem pressão, sem pedir reunião no 1º contato, com opt-out fácil. Quem lê o WhatsApp da clínica costuma ser a RECEPÇÃO: dizer com clareza o que é oferecido e pedir que encaminhe ao responsável pela gestão. Só afirmar o que é verdade (triagem no WhatsApp e NF-e já feitas para clínicas locais); nada de números inventados.",
+  "_ajuda": "Textos da prospecção. Tokens: {clinica} {a_clinica} {da_clinica} {bairro} {cidade} {local} {nota} {saudacao} {gancho} {autoridade} {case} {cta}. Spintax: {opção A|opção B}. {local} vira 'no <bairro>' ou, sem bairro, 'em <cidade>'. {nota} é a nota do Google (ex.: '4,9') e só existe se for 4,5 ou mais: textos com {nota} só são usados nesses casos. Tom: SEMPRE formal e profissional (sem diminutivos, emojis ou gírias), sem pressão, sem pedir reunião no 1º contato, com opt-out fácil. Quem lê o WhatsApp da clínica costuma ser a RECEPÇÃO: dizer com clareza o que é oferecido e pedir que encaminhe ao responsável pela gestão. Só afirmar o que é verdade (triagem no WhatsApp e NFS-e já feitas para clínicas locais); nada de números inventados.",
   "versao": "2026-11-13",
   "_versao": "Mude a 'versao' sempre que reescrever os textos: o resumo do teste A/B passa a contar só quem foi abordado com a versão atual (coluna versao_textos do CSV).",
   "saudacoes": {
@@ -20,7 +20,7 @@
   },
   "_ab": "Teste A/B: cada clínica recebe, de forma fixa, a variante 'curta' (aberturas) ou 'completa' (estruturas). Quando uma PESSOA responde, o script envia a 2ª etapa: na curta, a apresentação (estruturas_apresentacao); na completa, o resumo oferecido no CTA (estruturas_resumo).",
   "aberturas": [
-    "{saudacao} Meu nome é Nickolas e desenvolvo automações para clínicas em {cidade}, como triagem de pacientes pelo WhatsApp e emissão de NF-e. Posso encaminhar uma breve apresentação para {a_clinica}?",
+    "{saudacao} Meu nome é Nickolas e desenvolvo automações para clínicas em {cidade}, como triagem de pacientes pelo WhatsApp e emissão de NFS-e. Posso encaminhar uma breve apresentação para {a_clinica}?",
     "{saudacao} Meu nome é Nickolas e atuo com automação de atendimento e processos para clínicas em {cidade}. Gostaria de enviar uma breve apresentação para {a_clinica}; poderia me indicar o responsável pela gestão?",
     "{saudacao} Meu nome é Nickolas e desenvolvo automações para clínicas em {cidade}. Acompanhei a avaliação de {nota} estrelas {da_clinica} no Google e gostaria de enviar uma breve apresentação. Posso encaminhá-la por aqui?"
   ],
@@ -33,8 +33,8 @@
     "Se for oportuno, fico à disposição para uma apresentação objetiva, sem compromisso, com você ou com o responsável pela gestão (disponibilidade entre 12h e 13h, após as 17h de seg a qui, ou após as 16h às sextas). Caso não seja o momento, agradeço desde já a atenção."
   ],
   "estruturas_resumo": [
-    "Agradeço o retorno. Segue, de forma objetiva, como a automação opera na prática:\n\n• Triagem pelo WhatsApp: o paciente informa o motivo do contato e a recepção recebe os dados já organizados, evitando perguntas repetidas;\n• Confirmação e NF-e: lembretes reduzem faltas na agenda e a nota fiscal é preparada em poucos minutos, restando à equipe apenas validar com um clique.\n\nCaso tenham interesse, posso apresentar em uma conversa breve e objetiva, online ou presencial (horários entre 12h e 13h, após as 17h de seg a qui, ou após as 16h às sextas). Também fico à disposição por aqui.",
-    "Obrigado pela resposta. Em resumo, o funcionamento ocorre em duas frentes:\n\n• Atendimento pelo WhatsApp: as solicitações chegam estruturadas à recepção, com a queixa e a preferência de horário do paciente já resumidas;\n• Emissão de NF-e: um processo normalmente manual passa a ser concluído em poucos minutos, com validação em um clique.\n\nSe fizer sentido, posso demonstrar na prática em uma breve apresentação, sem compromisso (horários entre 12h e 13h, após as 17h de seg a qui, ou após as 16h às sextas). Caso não seja prioridade no momento, agradeço a atenção."
+    "Agradeço o retorno. Segue, de forma objetiva, como a automação opera na prática:\n\n• Triagem pelo WhatsApp: o paciente informa o motivo do contato e a recepção recebe os dados já organizados, evitando perguntas repetidas;\n• Confirmação e NFS-e: lembretes reduzem faltas na agenda e a nota fiscal é preparada em poucos minutos, restando à equipe apenas validar com um clique.\n\nCaso tenham interesse, posso apresentar em uma conversa breve e objetiva, online ou presencial (horários entre 12h e 13h, após as 17h de seg a qui, ou após as 16h às sextas). Também fico à disposição por aqui.",
+    "Obrigado pela resposta. Em resumo, o funcionamento ocorre em duas frentes:\n\n• Atendimento pelo WhatsApp: as solicitações chegam estruturadas à recepção, com a queixa e a preferência de horário do paciente já resumidas;\n• Emissão de NFS-e: um processo normalmente manual passa a ser concluído em poucos minutos, com validação em um clique.\n\nSe fizer sentido, posso demonstrar na prática em uma breve apresentação, sem compromisso (horários entre 12h e 13h, após as 17h de seg a qui, ou após as 16h às sextas). Caso não seja prioridade no momento, agradeço a atenção."
   ],
   "autoridades": [
     "Meu nome é Nickolas e desenvolvo automações operacionais para clínicas em {cidade}.",
@@ -46,8 +46,8 @@
     "Acompanhei a avaliação de {nota} estrelas {da_clinica} no Google, um excelente padrão de atendimento. Manter essa agilidade no dia a dia exige uma recepção bem apoiada, mesmo nos horários de pico."
   ],
   "cases": [
-    "Em clínicas da região, implantamos uma triagem pelo WhatsApp que entrega à recepção a queixa do paciente já resumida, integrada à emissão automatizada de NF-e — reduzindo o preenchimento manual a poucos minutos, com validação em um clique.",
-    "Entre as soluções já implantadas em clínicas locais estão a triagem organizada de pacientes pelo WhatsApp, antes mesmo de a recepção assumir a conversa, e a emissão automatizada de NF-e, concluída em poucos minutos com validação em um clique."
+    "Em clínicas da região, implantamos uma triagem pelo WhatsApp que entrega à recepção a queixa do paciente já resumida, integrada à emissão automatizada de NFS-e — reduzindo o preenchimento manual a poucos minutos, com validação em um clique.",
+    "Entre as soluções já implantadas em clínicas locais estão a triagem organizada de pacientes pelo WhatsApp, antes mesmo de a recepção assumir a conversa, e a emissão automatizada de NFS-e, concluída em poucos minutos com validação em um clique."
   ],
   "ctas": [
     "Caso faça sentido para {a_clinica}, posso enviar um breve resumo de como funcionaria na prática. Se este tema for tratado por outra pessoa, agradeço se puder encaminhar ao responsável pela gestão.",
