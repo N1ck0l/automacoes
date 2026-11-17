@@ -68,12 +68,6 @@ _PADROES_PEDE_NOME = (
     r"\b(?:informe|digite|envie)\s+(?:o\s+)?seu\s+nome\b",
 )
 
-_PADROES_PEDE_ASSUNTO = (
-    r"\b(?:como|em\s+que)\s+posso\s+(?:te\s+|lhe\s+)?ajudar\b",
-    r"\bqual\s+(?:e\s+)?(?:o\s+)?(?:seu\s+)?(?:assunto|motivo)\b",
-    r"\bsobre\s+o\s+que\s+(?:voce\s+)?(?:gostaria|deseja)\s+falar\b",
-)
-
 
 def texto_confere(texto_na_caixa: str, mensagem: str) -> bool:
     """A caixa contém exatamente a mensagem (nem a mais, nem a menos)?
@@ -156,15 +150,18 @@ def opcao_atendente(textos: list[str]) -> str | None:
 
 
 def resposta_para_robo(textos: list[str], nome_remetente: str = "Nickolas") -> str | None:
-    """Decide o que responder a outro robô: opção de menu, nome ou assunto."""
+    """Decide o que responder a outro robô: opção de menu ou nome.
+
+    "Como posso ajudar?" NÃO recebe resposta automática: é a saudação padrão
+    de secretárias e contas comerciais, não um menu. Responder "Assunto
+    administrativo…" ali saía solto na conversa (MB Odontologia, 16/11/2026).
+    """
     digito = opcao_atendente(textos)
     if digito:
         return digito
     junto = " ".join(_norm(t) for t in textos)
     if any(re.search(p, junto) for p in _PADROES_PEDE_NOME):
         return nome_remetente
-    if any(re.search(p, junto) for p in _PADROES_PEDE_ASSUNTO):
-        return "Assunto administrativo para o responsável pela gestão da clínica."
     return None
 
 

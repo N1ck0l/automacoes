@@ -42,6 +42,7 @@ import re
 import sys
 import time
 import unicodedata
+import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -349,9 +350,20 @@ def nome_para_mensagem(clinica: str, bairro: str = "", cidade: str = "") -> str:
     """
     original = (clinica or "").strip()
     partes = re.split(r"\s+[|–—-]\s+|\s*\|\s*", original)
+
+    def generico(p: str) -> bool:  # "Dentista 24Horas", "Implantes Dentários"
+        chave = re.sub(r"[^a-z0-9]", "", _sem_acentos(p.lower()))
+        return chave in NOMES_GENERICOS
+
     # Primeiro trecho com pelo menos 2 letras ("01 - Odonto10x" -> "Odonto10x")
-    nome = next((p for p in partes if len(re.findall(r"[^\W\d_]", p)) >= 2),
-                partes[0])
+    # que não seja só a especialidade ("Dentista 24Horas - Dr Lucas" -> "Dr Lucas").
+    validos = [p for p in partes if len(re.findall(r"[^\W\d_]", p)) >= 2]
+    nome = next((p for p in validos if not generico(p)),
+                validos[0] if validos else partes[0])
+    nome = re.sub(r"^(?:urg[eê]ncia|emerg[eê]ncia)\s+(?=dra?\b)", "", nome,
+                  flags=re.IGNORECASE)  # "Urgencia Dr. Fulano" -> "Dr. Fulano"
+    nome = re.sub(r"^Clinica\b", "Clínica", nome)          # acento que o Maps perde
+    nome = re.sub(r"^Consultorio\b", "Consultório", nome)
     nome = re.sub(r"\s*\([^)]*\)?", "", nome)
     # "Clínica Bem Viver. Consultas e Exames" -> corta no ponto final de frase
     # (mas não em abreviações curtas como "Dra. " / "Dr. ")
@@ -410,6 +422,28 @@ def _opcoes(lista: list[str], contexto: dict) -> list[str]:
     return [o for o in lista if "{nota}" not in o] or lista
 
 
+# Bairros de Aracaju usados com "na" ("na Farolândia"); o resto leva "no".
+BAIRROS_FEMININOS = {"farolandia", "atalaia", "coroa do meio", "aruana", "suica",
+                     "suissa", "zona de expansao", "soledade", "cidade nova", "palestina"}
+# Soam mal sem a palavra "bairro" ("no Cirurgia") -> "no bairro Cirurgia".
+BAIRROS_COM_PALAVRA_BAIRRO = {"cirurgia", "industrial"}
+# Lixo de extração do Maps que não é bairro ("Av. ...", nome de clínica).
+_RE_NAO_BAIRRO = re.compile(
+    r"^(?:av\.?|avenida|rua|r\.|travessa|tv\.?|rod\.?|rodovia|praca|pca\.?)\s"
+    r"|clinic|medic|odont|consult|\d", re.IGNORECASE)
+
+
+def local_do_bairro(bairro: str, cidade: str) -> str:
+    """'no Centro' / 'na Farolândia'; sem bairro válido, 'em <cidade>'."""
+    bairro = (bairro or "").strip()
+    chave = _sem_acentos(bairro.lower())
+    if not bairro or not bairro[0].isupper() or _RE_NAO_BAIRRO.search(chave):
+        return f"em {cidade}"
+    if chave in BAIRROS_COM_PALAVRA_BAIRRO:
+        return f"no bairro {bairro}"
+    return f"{'na' if chave in BAIRROS_FEMININOS else 'no'} {bairro}"
+
+
 def _contexto(contato: dict, mensagens: dict, agora: datetime | None) -> dict:
     bairro = (contato.get("bairro") or "").strip()
     cidade = (contato.get("cidade") or "").strip() or CIDADE_PADRAO
@@ -421,8 +455,8 @@ def _contexto(contato: dict, mensagens: dict, agora: datetime | None) -> dict:
         "da_clinica": f"{'do' if art == 'o' else 'da'} {nome}",
         "bairro": bairro,
         "cidade": cidade,
-        # Sem bairro, "no {bairro}" viraria "no  e sei..." — cai para a cidade.
-        "local": f"no {bairro}" if bairro else f"em {cidade}",
+        # Sem bairro (ou bairro inválido) cai para a cidade.
+        "local": local_do_bairro(bairro, cidade),
         "saudacao": escolher_saudacao(mensagens, agora),
         "nota": nota_google(contato),
     }
@@ -486,10 +520,27 @@ def montar_despedida(contato: dict, mensagens: dict | None = None,
 
 def montar_texto_followup(contato: dict, mensagens: dict | None = None,
                            agora: datetime | None = None) -> str:
-    """Mensagem curta de retomada para quem não respondeu."""
+    """Mensagem curta de retomada para quem não respondeu.
+
+    Quem já respondeu e recebeu a 2ª etapa (ex.: "irei encaminhar ao setor
+    responsável") recebe um texto próprio: pedir de novo o encaminhamento,
+    como se ninguém tivesse respondido, não se encaixa na conversa.
+    """
     m = mensagens or carregar_mensagens()
-    return resolver_spintax(random.choice(m["followups"]),
-                            _contexto(contato, m, agora))
+    opcoes = m["followups"]
+    contexto = _contexto(contato, m, agora)
+    if ja_recebeu_segunda_etapa(contato) and m.get("followups_pos_resposta"):
+        opcoes = m["followups_pos_resposta"]
+        # O que foi enviado na 2ª etapa: apresentação (curta) ou resumo (completa).
+        contexto["material"] = ("o resumo" if contato.get("etapa") == "resumo"
+                                else "a apresentação")
+    return resolver_spintax(random.choice(opcoes), contexto)
+
+
+def ja_recebeu_segunda_etapa(contato: dict) -> bool:
+    """True se uma pessoa já respondeu e a apresentação/resumo foi enviado."""
+    variante, etapa = contato.get("variante"), contato.get("etapa")
+    return etapa == "resumo" or (variante == "curta" and etapa == "apresentacao")
 
 
 def demonstracao_html(mensagens: dict | None = None,
@@ -537,7 +588,7 @@ def _com_link_demonstracao(texto: str, mensagens: dict,
     """Acrescenta o link da demonstração quando hospedado (html preenchido)."""
     url = demonstracao_html(mensagens, contato)
     return (f"{texto}\n\nDemonstração interativa: {url} "
-            "(abre direto no navegador, sem baixar nada)" if url else texto)
+            "(abre direto no navegador, sem precisar baixar nada)" if url else texto)
 
 
 def montar_link(contato: dict, mensagem: str) -> str:
@@ -672,6 +723,40 @@ def precisa_followup(contato: dict, dias: int, max_followups: int,
     if referencia is None:
         return False
     return dias_uteis_entre(referencia, agora or datetime.now()) >= dias
+
+
+def encerrar_sem_retorno(contatos: list[dict], dias: int, max_followups: int,
+                         agora: datetime | None = None,
+                         verificados: set[str] | None = None) -> list[dict]:
+    """Encerra quem já recebeu o(s) follow-up(s) e continua sem resposta de uma pessoa.
+
+    Regra do operador (16/11/2026): "se não tivemos resposta, deixe para lá e
+    seguimos com os próximos". Passados `dias` úteis do último envio, o contato
+    vira `nao_contatar` com resposta "sem resposta" (o opt-out de verdade fica
+    com "sem interesse"): não recebe mais nada automático nem volta à fila.
+    Chame só com as respostas recém-verificadas, para não encerrar quem respondeu.
+    Com `verificados`, só encerra esses telefones (conversa lida nesta passada):
+    quem ficou de fora do limite de leitura ou falhou ao abrir espera a próxima.
+    """
+    agora = agora or datetime.now()
+    encerrados = []
+    for c in contatos:
+        if c.get("status") != ENVIADO:
+            continue
+        if verificados is not None and c.get("telefone") not in verificados:
+            continue
+        if (c.get("resposta") or "") not in RESPOSTAS_EM_ABERTO:
+            continue
+        if _inteiro(c.get("followups")) < max_followups:
+            continue
+        referencia = _data(c.get("ultimo_envio") or c.get("atualizado_em") or "")
+        if referencia is None or dias_uteis_entre(referencia, agora) < dias:
+            continue
+        c["status"] = NAO_CONTATAR
+        c["resposta"] = "sem resposta"
+        c["atualizado_em"] = agora.isoformat(timespec="seconds")
+        encerrados.append(c)
+    return encerrados
 
 
 def reabrir_fila(contatos: list[dict]) -> int:
@@ -875,6 +960,22 @@ class _PlaywrightDriver:
             self._pw.stop()
 
 
+JS_INTERCEPTA_ARQUIVO = """
+if (!window.__prospeccaoAnexo) {
+  const original = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file') {
+      this.setAttribute('data-prospeccao-anexo', '1');
+      if (!this.isConnected) { this.style.display = 'none'; document.body.appendChild(this); }
+      return;
+    }
+    return original.apply(this, arguments);
+  };
+  window.__prospeccaoAnexo = true;
+}
+"""
+
+
 class SessaoWeb:
     """WhatsApp Web via Selenium, com UM navegador reaproveitado na sessão.
 
@@ -893,9 +994,16 @@ class SessaoWeb:
         "dialogo": "[role='dialog'], [data-animate-modal-popup]",
         "bolha": "#main [data-pre-plain-text]",
         "bolha_texto": "[data-testid='selectable-text']",
-        "anexar": ('div[title="Anexar"], div[title="Attach"], '
+        # Conferido no WhatsApp Web em 17/11/2026: botão sem title/data-icon,
+        # só aria-label; os seletores antigos ficam como reserva.
+        "anexar": ('#main footer button[aria-label="Anexar"], '
+                   '#main footer button[aria-label="Attach"], '
+                   'div[title="Anexar"], div[title="Attach"], '
                    'span[data-icon="plus"], span[data-icon="clip"]'),
-        "enviar": 'span[data-icon="send"]',
+        # Prévia do anexo: div[aria-label="Enviar 1 item selecionado"].
+        "enviar": ('[aria-label^="Enviar "][role="button"], div[aria-label^="Enviar "], '
+                   '[aria-label^="Send "], span[data-icon="send"], '
+                   'span[data-icon="wds-ic-send-filled"]'),
     }
     SELETOR_CAIXA = SELETORES["caixa"]
 
@@ -925,6 +1033,7 @@ class SessaoWeb:
         self.driver = None
         self._trava: TravaEnvio | None = None
         self.ultimo_erro: str | None = None
+        self.erro_anexo: str | None = None
         self.confirmado = False
 
     def _garantir_driver(self):
@@ -1175,79 +1284,95 @@ class SessaoWeb:
         Melhor esforço: a mensagem de texto já foi enviada antes — falha aqui
         só avisa o operador para anexar manualmente; nunca desfaz nem reenvia.
         """
+        self.erro_anexo = None
         if self.driver is None:
+            self.erro_anexo = "navegador fechado"
             return False
         caminho = Path(caminho)
         if not caminho.is_file():
+            self.erro_anexo = f"arquivo não encontrado: {caminho.name}"
             print(f"[AVISO] Demonstração não encontrada: {caminho.name}")
             return False
+        driver = self.driver
+        etapa = "botão Anexar"
         try:
-            driver = self.driver
-            botoes = [b for b in driver.find_elements(
-                _By.CSS_SELECTOR,
-                'div[title="Anexar"], div[title="Attach"], span[data-icon="plus"], '
-                'span[data-icon="clip"]') if b.is_displayed()]
+            def visiveis(seletor: str) -> list:
+                return [e for e in driver.find_elements(_By.CSS_SELECTOR, seletor)
+                        if e.is_displayed()]
+
+            botoes = visiveis(self.SELETORES["anexar"])
             if not botoes:
-                print("[AVISO] Botão de anexo não encontrado — anexe o PDF "
-                      "manualmente no WhatsApp Web.")
-                return False
+                raise LookupError("não encontrado")
+            # Clicar em "Fotos e vídeos"/"Documento" chama input.click(), que
+            # abriria a janela NATIVA de arquivos (o Selenium não a controla).
+            # Interceptamos: o input criado é só marcado e recebe o arquivo direto.
+            driver.execute_script(JS_INTERCEPTA_ARQUIVO)
             botoes[0].click()
             time.sleep(1.0)
+
+            etapa = "opção do menu de anexo"
             eh_imagem = caminho.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
-            alvo = None
-            itens = driver.find_elements(
-                _By.CSS_SELECTOR, '[role="menuitem"], [role="button"]')
-            if eh_imagem:
-                for item in itens:
-                    rotulo = (item.get_attribute("innerText") or "").strip().lower()
-                    if ("foto" in rotulo or "photo" in rotulo or "image" in rotulo
-                            or item.find_elements(_By.CSS_SELECTOR, 'span[data-icon="image"]')):
-                        alvo = item
-                        break
+            rotulos = (("fotos", "photos") if eh_imagem else ()) + ("documento", "document")
+            itens = visiveis('[role="menuitem"]')
+            alvo = next((i for r in rotulos for i in itens
+                         if (i.get_attribute("innerText") or "").strip().lower()
+                         .startswith(r)), None)
             if alvo is None:
-                for item in itens:
-                    rotulo = (item.get_attribute("innerText") or "").strip().lower()
-                    if "document" in rotulo or item.find_elements(
-                            _By.CSS_SELECTOR, 'span[data-icon="document"]'):
-                        alvo = item
-                        break
-            if alvo is None:
-                print("[AVISO] Opção 'Documento' não encontrada — anexe o PDF "
-                      "manualmente no WhatsApp Web.")
-                return False
+                raise LookupError("não encontrada")
             alvo.click()
-            entradas = driver.find_elements(_By.CSS_SELECTOR, 'input[type="file"]')
-            if not entradas:
-                print("[AVISO] Seletor de arquivo não encontrado — anexe o PDF "
-                      "manualmente no WhatsApp Web.")
-                return False
-            try:
-                entradas[0].send_keys(str(caminho.resolve()))
-            except Exception:  # noqa: BLE001 - input oculto em algumas versões
-                driver.execute_script("arguments[0].style.display='block';",
-                                      entradas[0])
-                entradas[0].send_keys(str(caminho.resolve()))
-            # tela de conferência do documento: espera o botão de envio visível
+
+            etapa = "campo de arquivo"
+            entrada = None
+            for _ in range(10):  # até ~3s
+                time.sleep(0.3)
+                marcados = driver.find_elements(_By.CSS_SELECTOR,
+                                                "input[data-prospeccao-anexo]")
+                if marcados:
+                    entrada = marcados[-1]
+                    break
+            if entrada is None:
+                raise LookupError("não apareceu")
+            entrada.send_keys(str(caminho.resolve()))
+
+            etapa = "tela de prévia"
             botao_envio = None
             for _ in range(40):  # até ~20s
                 time.sleep(0.5)
-                visiveis = [b for b in driver.find_elements(
-                    _By.CSS_SELECTOR, 'span[data-icon="send"]') if b.is_displayed()]
-                if visiveis:
-                    botao_envio = visiveis[0]
+                encontrados = visiveis(self.SELETORES["enviar"])
+                if encontrados:
+                    botao_envio = encontrados[0]
                     break
             if botao_envio is None:
-                print("[AVISO] Documento selecionado, mas a tela de envio não "
-                      "abriu — confira no WhatsApp Web e envie manualmente.")
-                return False
+                raise LookupError("não abriu")
+
+            etapa = "envio do anexo"
             botao_envio.click()
-            time.sleep(4)
+            for _ in range(30):  # a prévia fecha quando o envio é aceito
+                time.sleep(0.5)
+                if not visiveis(self.SELETORES["enviar"]):
+                    break
+            else:
+                raise LookupError("a prévia não fechou após clicar em Enviar")
+            time.sleep(4)  # deixa o upload terminar antes de navegar
             print(f"[OK] {caminho.name} anexado na conversa.")
             return True
         except Exception as exc:  # noqa: BLE001 - seletores da Meta mudam
-            print(f"[AVISO] Falha ao anexar {caminho.name} ({exc}) — anexe o "
-                  "PDF manualmente no WhatsApp Web.")
+            self.erro_anexo = f"{etapa}: {str(exc).splitlines()[0] if str(exc) else exc}"
+            print(f"[AVISO] Falha ao anexar {caminho.name} ({self.erro_anexo}) — "
+                  "anexe manualmente no WhatsApp Web.")
+            self._fechar_previa()
             return False
+
+    def _fechar_previa(self) -> None:
+        """Descarta uma prévia de anexo aberta (nunca deixa algo pronto para sair)."""
+        try:
+            for botao in self.driver.find_elements(
+                    _By.CSS_SELECTOR, 'button[aria-label="Fechar"], button[aria-label="Close"]'):
+                if botao.is_displayed():
+                    botao.click()
+                    return
+        except Exception:  # noqa: BLE001
+            pass
 
     def fechar(self) -> None:
         if self.driver is not None:
@@ -1595,7 +1720,6 @@ def chave_clinica(contato: dict) -> str:
     "Clínica CALE - Consultas | Exames" e "Clinica Cale" viram a mesma chave,
     para não mandar duas mensagens à mesma clínica com números diferentes.
     """
-    import unicodedata
     nome = nome_para_mensagem(contato["clinica"], contato.get("bairro", ""),
                               contato.get("cidade") or CIDADE_PADRAO)
     sem_acento = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode()
@@ -1723,17 +1847,28 @@ def verificar_conversas(planilha: Planilha, sessao: "SessaoWeb",
                  and ((c.get("resposta") or "") in RESPOSTAS_EM_ABERTO
                       # pessoa respondeu à abertura curta e a apresentação ainda não foi
                       or (c.get("resposta") == "respondeu" and _segunda_etapa(c)))}
+    # "verificados": números cuja situação de resposta foi de fato conferida
+    # nesta passada (conversa lida, ou nenhuma não lida no WhatsApp). Só esses
+    # podem ser encerrados por falta de retorno (encerrar_sem_retorno).
     relatorio = {"conferidas": len(conferir_todos & confirmados),
                  "nao_verificaveis": 0, "problemas": [], "respostas": [],
                  "optouts": [], "automaticas": [], "erro": None,
-                 "acoes": [], "respostas_texto": []}
+                 "acoes": [], "respostas_texto": [], "verificados": set()}
 
     if apenas_nao_lidas and responder:
         nao_lidas = _contar_nao_lidas_visiveis(sessao)
         if nao_lidas == 0:
+            relatorio["verificados"] |= responder
             responder = set()
 
-    for tel in sorted(conferir | responder)[:max_conversas]:
+    # Entregas de hoje primeiro; depois as respostas pendentes mais antigas
+    # (ordenar por telefone deixava sempre os mesmos números de fora do limite).
+    def _antiguidade(tel: str) -> str:
+        c = por_tel.get(tel, {})
+        return c.get("ultimo_envio") or c.get("atualizado_em") or ""
+
+    ordem = sorted(conferir) + sorted(responder - conferir, key=_antiguidade)
+    for tel in ordem[:max_conversas]:
         contato = por_tel.get(tel, {"clinica": tel})
         enviadas = [r.get("mensagem", "") for r in historico.get(tel, [])]
         bolhas = ler_conversa(sessao, tel,
@@ -1764,6 +1899,7 @@ def verificar_conversas(planilha: Planilha, sessao: "SessaoWeb",
             desde = _data(contato.get("ultimo_envio") or contato.get("atualizado_em") or "")
             if desde is None:
                 continue
+            relatorio["verificados"].add(tel)
             resposta = classificar_resposta(bolhas, enviadas, desde)
             primeiro = _data(historico[tel][0].get("timestamp", "")) or desde
             recebidas = mensagens_recebidas(bolhas, enviadas, primeiro)
@@ -1998,8 +2134,10 @@ def executar_acoes(relatorio: dict, planilha: Planilha, sessao: "SessaoWeb",
                 if sessao.enviar_arquivo(pdf):
                     _registrar(f"[AÇÃO] {pdf.name} anexado para {nome}")
                 else:
-                    _registrar(f"[AVISO] {pdf.name} não anexado para {nome} — "
-                               "anexe manualmente")
+                    motivo = getattr(sessao, "erro_anexo", None)
+                    _registrar(f"[AVISO] {pdf.name} não anexado para {nome}"
+                               + (f" ({motivo})" if motivo else "")
+                               + " — anexe manualmente")
         elif tipo == "despedida":
             contato["etapa"] = "despedida"  # status continua nao_contatar
             contato["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
@@ -2075,11 +2213,11 @@ def rodar_acompanhamento(planilha: Planilha, args: argparse.Namespace,
     except EnvioEmAndamento as exc:
         _registrar(f"[ACOMPANHAMENTO] {exc}")
         return
-    recarregada = carregar_planilha(planilha.caminho)
-    planilha.linhas, planilha.contatos, planilha.colunas = (
-        recarregada.linhas, recarregada.contatos, recarregada.colunas)
     sessao = SessaoWeb()
     try:
+        recarregada = carregar_planilha(planilha.caminho)
+        planilha.linhas, planilha.contatos, planilha.colunas = (
+            recarregada.linhas, recarregada.contatos, recarregada.colunas)
         relatorio = verificar_conversas(planilha, sessao)
         if relatorio["erro"]:
             _registrar(f"[ACOMPANHAMENTO] {relatorio['erro']}")
@@ -2092,6 +2230,31 @@ def rodar_acompanhamento(planilha: Planilha, args: argparse.Namespace,
     finally:
         sessao.fechar()
         trava.__exit__(None, None, None)
+
+
+def followups_hoje() -> int:
+    """Follow-ups enviados hoje (contam no limite diário)."""
+    hoje = datetime.now().date().isoformat()
+    return sum(1 for r in ler_historico()
+               if str(r.get("timestamp", "")).startswith(hoje)
+               and r.get("tipo") == FOLLOWUP)
+
+
+def montar_fila_automatica(retomar: list[dict], novos: list[dict], limite_dia: int,
+                           reserva_novos: float = 0.5,
+                           followups_ja_enviados: int = 0) -> list[tuple[dict, str]]:
+    """Ordem do envio automático, com parte da cota reservada a clínicas novas.
+
+    Sem reserva, os follow-ups gastavam a cota inteira e nenhuma clínica nova
+    era abordada (13/11: 10 follow-ups, 0 novas). Agora os follow-ups vão até
+    `limite_dia * (1 - reserva_novos)`; depois vêm as novas. Se faltarem novas
+    (fila vazia, puladas, sem WhatsApp), os follow-ups restantes ocupam a sobra.
+    """
+    reserva = min(max(reserva_novos, 0.0), 1.0)
+    teto = max(0, limite_dia - math.ceil(limite_dia * reserva) - followups_ja_enviados)
+    return ([(c, "followup") for c in retomar[:teto]]
+            + [(c, "novo") for c in novos]
+            + [(c, "followup") for c in retomar[teto:]])
 
 
 def rodar_automatico(planilha: Planilha, args: argparse.Namespace,
@@ -2128,12 +2291,6 @@ def rodar_automatico(planilha: Planilha, args: argparse.Namespace,
         notificar_windows("Prospecção: não rodou", str(exc))
         return 0
 
-    # Relê o CSV já com a trava: durante o atraso aleatório o minerador pode
-    # ter incluído contatos — salvar a versão antiga os apagaria.
-    recarregada = carregar_planilha(planilha.caminho)
-    planilha.linhas, planilha.contatos, planilha.colunas = (
-        recarregada.linhas, recarregada.contatos, recarregada.colunas)
-
     enviadas: list[str] = []
     confirmados_agora: set[str] = set()
     sem_whatsapp: list[str] = []
@@ -2143,6 +2300,11 @@ def rodar_automatico(planilha: Planilha, args: argparse.Namespace,
     acoes_feitas: list[str] = []
     sessao = SessaoWeb()
     try:
+        # Relê o CSV já com a trava: durante o atraso aleatório o minerador pode
+        # ter incluído contatos — salvar a versão antiga os apagaria.
+        recarregada = carregar_planilha(planilha.caminho)
+        planilha.linhas, planilha.contatos, planilha.colunas = (
+            recarregada.linhas, recarregada.contatos, recarregada.colunas)
         cota = args.limite_dia - envios_hoje()
         abertas_hoje = getattr(args, "abertas_hoje", False)
         candidatos = [c for c in planilha.contatos
@@ -2153,7 +2315,9 @@ def rodar_automatico(planilha: Planilha, args: argparse.Namespace,
                    if precisa_followup(c, getattr(args, "dias_followup", 2),
                                        getattr(args, "max_followups", 1))
                    and (not abertas_hoje or clinica_aberta_hoje(c, agora))]
-        fila = [(c, "followup") for c in retomar] + [(c, "novo") for c in novos]
+        fila = montar_fila_automatica(
+            retomar, novos, args.limite_dia,
+            getattr(args, "reserva_novos", 50) / 100, followups_hoje())
         contatadas = clinicas_ja_contatadas(planilha.contatos)
         _registrar(f"[AUTO] Início: cota {max(cota, 0)}, {len(retomar)} follow-up(s), "
                    f"{len(novos)} pendente(s) "
@@ -2262,6 +2426,17 @@ def rodar_automatico(planilha: Planilha, args: argparse.Namespace,
                 else:
                     acoes_feitas = executar_acoes(verificacao, planilha, sessao,
                                                   mensagens, args)
+                    # Só depois de ler as respostas: quem já teve o follow-up e
+                    # segue sem retorno sai da fila de vez.
+                    encerrados = encerrar_sem_retorno(
+                        planilha.contatos, getattr(args, "dias_followup", 2),
+                        getattr(args, "max_followups", 1),
+                        verificados=verificacao.get("verificados", set()))
+                    if encerrados:
+                        planilha.salvar()
+                        _registrar(f"[ENCERRADO] {len(encerrados)} contato(s) sem retorno "
+                                   "após o follow-up: "
+                                   + ", ".join(c["clinica"][:30] for c in encerrados))
             except Exception as exc:  # noqa: BLE001
                 _registrar(f"[VERIFICAÇÃO] falhou: {exc}")
 
@@ -2351,6 +2526,10 @@ def _criar_parser() -> argparse.ArgumentParser:
     parser.add_argument("--atraso-max", type=int, default=0,
                         help="--automatico: começa após um atraso aleatório de 0 a N "
                              "minutos (horário de início variado)")
+    parser.add_argument("--reserva-novos", type=int, default=50,
+                        help="--automatico: %% da cota diária reservada a clínicas "
+                             "novas; follow-ups usam o resto (padrão: 50). Se não "
+                             "houver novas suficientes, os follow-ups ocupam a sobra.")
     parser.add_argument("--resumo-para", default=None,
                         help="--automatico: telefone que recebe o resumo diário "
                              "no WhatsApp (o seu próprio número)")

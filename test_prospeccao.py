@@ -314,6 +314,21 @@ class TestMensagem(unittest.TestCase):
             self.assertIn("Ferraz Odontologia", texto)
             self.assertNotIn("{", texto)
 
+    def test_followup_de_quem_ja_respondeu_nao_pede_encaminhamento(self):
+        # Curta + apresentação enviada = uma pessoa respondeu à abertura.
+        respondeu = dict(self.CONTATO, variante="curta", etapa="apresentacao")
+        for _ in range(20):
+            texto = pw.montar_texto_followup(respondeu)
+            self.assertIn("apresentação", texto)
+            self.assertIn("Ferraz Odontologia", texto)
+            self.assertNotIn("mensagem anterior", texto)
+            self.assertNotIn("{", texto)
+            self.assertIsNone(pw.validar_mensagem(texto, respondeu, "followup"))
+        # Completa sem resposta continua no follow-up comum.
+        sem_resposta = dict(self.CONTATO, variante="completa", etapa="apresentacao")
+        self.assertFalse(pw.ja_recebeu_segunda_etapa(sem_resposta))
+        self.assertTrue(pw.ja_recebeu_segunda_etapa(dict(self.CONTATO, etapa="resumo")))
+
     def test_personalizada_sem_chaves_sobrando(self):
         for _ in range(30):
             texto = pw.montar_texto(self.CONTATO)
@@ -487,6 +502,38 @@ class TestFollowup(unittest.TestCase):
         self.assertFalse(pw.precisa_followup(respondeu, 3, 1, self.AGORA))
         self.assertFalse(pw.precisa_followup(opt_out, 3, 1, self.AGORA))
 
+    def test_encerra_sem_retorno_apos_o_followup(self):
+        antigo = "2026-01-01T10:00:00"
+        sem_retorno = _contato(status="enviado", resposta="aguardando", followups="1",
+                               ultimo_envio=antigo)
+        robo = _contato(status="enviado", resposta="resposta automatica", followups="1",
+                        ultimo_envio=antigo)
+        sem_followup = _contato(status="enviado", resposta="aguardando", followups="",
+                                ultimo_envio=antigo)
+        respondeu = _contato(status="enviado", resposta="respondeu", followups="1",
+                             ultimo_envio=antigo)
+        recente = _contato(status="enviado", resposta="aguardando", followups="1",
+                           ultimo_envio=self.AGORA.isoformat(timespec="seconds"))
+        todos = [sem_retorno, robo, sem_followup, respondeu, recente]
+        encerrados = pw.encerrar_sem_retorno(todos, 2, 1, self.AGORA)
+        self.assertEqual(encerrados, [sem_retorno, robo])
+        for c in encerrados:
+            self.assertEqual((c["status"], c["resposta"]), ("nao_contatar", "sem resposta"))
+            self.assertFalse(pw.precisa_followup(c, 2, 1, self.AGORA))
+        self.assertEqual([c["status"] for c in (sem_followup, respondeu, recente)],
+                         ["enviado"] * 3)
+
+    def test_nao_encerra_quem_nao_teve_a_conversa_lida(self):
+        antigo = "2026-01-01T10:00:00"
+        lido = _contato(status="enviado", resposta="aguardando", followups="1",
+                        ultimo_envio=antigo, telefone="5579999990001")
+        nao_lido = _contato(status="enviado", resposta="aguardando", followups="1",
+                            ultimo_envio=antigo, telefone="5579999990002")
+        encerrados = pw.encerrar_sem_retorno([lido, nao_lido], 2, 1, self.AGORA,
+                                             verificados={"5579999990001"})
+        self.assertEqual(encerrados, [lido])
+        self.assertEqual(nao_lido["status"], "enviado")
+
     def test_respeita_maximo_de_followups(self):
         c = _contato(status="enviado", resposta="aguardando", followups="1",
                      ultimo_envio="2026-01-01T10:00:00")
@@ -614,9 +661,14 @@ class TestValidarMensagem(unittest.TestCase):
             self.assertIn(trecho.lower(), problema.lower())
 
     def test_nome_generico_e_pulado(self):
-        contato = {"clinica": "Implantes Dentários | Dentista | Ortoriso Aracaju",
+        # Só especialidade, sem marca em nenhum trecho: pulado.
+        contato = {"clinica": "Implantes Dentários | Dentista",
                    "bairro": "Centro", "cidade": "Aracaju"}
         self.assertIn("genérico", pw.validar_mensagem(pw.montar_texto(contato), contato))
+        # Marca num trecho seguinte: aproveitada.
+        com_marca = dict(contato, clinica="Implantes Dentários | Dentista | Ortoriso Aracaju")
+        self.assertIsNone(pw.validar_mensagem(pw.montar_texto(com_marca), com_marca))
+        self.assertIn("Ortoriso", pw.montar_texto(com_marca))
 
     def test_paragrafo_duplicado(self):
         boa = pw.montar_texto(self.CONTATO)
@@ -774,6 +826,29 @@ class TestModoAutomatico(BasePw):
         self.assertIn("Nova do Minerador",
                       self.planilha.caminho.read_text(encoding="utf-8"))
 
+    def test_metade_da_cota_fica_para_clinicas_novas(self):
+        self.args.limite_dia = 4
+        antigo = "2026-01-02T10:00:00"
+        for i in range(4):  # 4 follow-ups vencidos disputando a cota de 4
+            self.planilha.adicionar(_contato(
+                clinica=f"Clínica Retomar {i}", bairro="Centro",
+                telefone=f"557999111000{i}", status="enviado", resposta="aguardando",
+                ultimo_envio=antigo))
+        n, log = self._rodar([(True, None, True)] * 4)
+        self.assertEqual(n, 4)
+        retomados = [t for t in _SessaoFalsa.chamadas if t.startswith("557999111")]
+        self.assertEqual(len(retomados), 2)  # 2 follow-ups + 2 novas
+
+    def test_sobra_da_reserva_vai_para_followups(self):
+        retomar = [{"telefone": f"r{i}"} for i in range(5)]
+        novos = [{"telefone": "n0"}]
+        fila = pw.montar_fila_automatica(retomar, novos, 4, 0.5)
+        self.assertEqual([o for _, o in fila][:3], ["followup", "followup", "novo"])
+        self.assertEqual(len(fila), 6)  # o resto dos follow-ups fica no fim
+        # Follow-ups já enviados hoje (outra execução) contam no teto.
+        fila = pw.montar_fila_automatica(retomar, novos, 4, 0.5, followups_ja_enviados=2)
+        self.assertEqual(fila[0][1], "novo")
+
     def test_nao_faz_nada_em_feriado_ou_fora_da_janela(self):
         pw.dia_util = lambda agora=None: False
         n, log = self._rodar([])
@@ -895,7 +970,7 @@ class TestTextosAB(unittest.TestCase):
 
     def test_com_nota_as_vezes_elogia(self):
         textos = {pw.montar_abertura(self.COM_NOTA) for _ in range(60)}
-        self.assertTrue(any("4,9 estrelas" in t for t in textos))
+        self.assertTrue(any("nota 4,9" in t for t in textos))
 
     def test_abertura_e_apresentacao_passam_na_validacao(self):
         for contato in (self.COM_NOTA, self.SEM_NOTA):
@@ -1253,6 +1328,62 @@ class TestClinicaAbertaHoje(unittest.TestCase):
         self.assertFalse(pw.clinica_aberta_hoje(
             {"horarios": "Seg: 08:00–18:00 | Sáb: Fechado"}, sabado))
         self.assertFalse(pw.clinica_aberta_hoje({"horarios": ""}, sabado))
+
+
+class TestRedacao(unittest.TestCase):
+    def test_local_com_artigo_do_bairro(self):
+        self.assertEqual(pw.local_do_bairro("Centro", "Aracaju"), "no Centro")
+        self.assertEqual(pw.local_do_bairro("Farolândia", "Aracaju"), "na Farolândia")
+        self.assertEqual(pw.local_do_bairro("Suíça", "Aracaju"), "na Suíça")
+        self.assertEqual(pw.local_do_bairro("Cirurgia", "Aracaju"), "no bairro Cirurgia")
+        # lixo de extração do Maps não vira bairro
+        self.assertEqual(pw.local_do_bairro("Av. Ministro Geraldo Barreto Sobral", "Aracaju"),
+                         "em Aracaju")
+        self.assertEqual(pw.local_do_bairro("centro médico odontológico", "Aracaju"),
+                         "em Aracaju")
+        self.assertEqual(pw.local_do_bairro("", "Aracaju"), "em Aracaju")
+
+    def test_nome_pula_trecho_generico(self):
+        self.assertEqual(pw.nome_para_mensagem(
+            "Dentista 24Horas - Dr Lucas Eduardo - Tratamento de Canal - Limpeza"),
+            "Dr Lucas Eduardo")
+        self.assertEqual(pw.nome_para_mensagem(
+            "Dentista 24horas | Urgencia Dr. Fellipe Milet | Cirurgião-Dentista"),
+            "Dr. Fellipe Milet")
+        self.assertEqual(pw.nome_para_mensagem("Clinica Inovare"), "Clínica Inovare")
+
+    def test_followup_pos_resposta_cita_o_que_foi_enviado(self):
+        base = {"clinica": "Ferraz Odontologia", "bairro": "Centro", "cidade": "Aracaju",
+                "telefone": "5579999990001"}
+        for _ in range(20):
+            resumo = pw.montar_texto_followup(dict(base, variante="completa", etapa="resumo"))
+            self.assertIn("o resumo", resumo)
+            self.assertNotIn("apresentação", resumo)
+            curta = pw.montar_texto_followup(dict(base, variante="curta", etapa="apresentacao"))
+            self.assertIn("a apresentação", curta)
+
+    def test_textos_sem_primeira_pessoa_do_plural_nem_abreviacao(self):
+        import json
+        dados = json.loads(pw.ARQUIVO_MENSAGENS.read_text(encoding="utf-8"))
+        # Só os textos enviados (chaves "_..." são ajuda para quem edita).
+        texto = json.dumps({k: v for k, v in dados.items() if not k.startswith("_")},
+                           ensure_ascii=False).lower()
+        for proibido in ("implantamos", "nosso trabalho", "seg a qui", "sem problema",
+                         "clínicas da região", "clínicas locais"):
+            self.assertNotIn(proibido, texto)
+
+
+class TestModoManual(unittest.TestCase):
+    def test_abre_o_link_no_navegador(self):
+        from unittest import mock
+        contato = {"clinica": "Ferraz", "bairro": "", "cidade": "Aracaju",
+                   "telefone": "5579999990001"}
+        with mock.patch("webbrowser.open", return_value=True) as abrir, \
+                mock.patch("builtins.input", side_effect=["s", "", "s"]), \
+                redirect_stdout(io.StringIO()):
+            self.assertTrue(pw.enviar_modo_manual(contato, "Olá"))
+        abrir.assert_called_once()
+        self.assertIn("phone=5579999990001", abrir.call_args[0][0])
 
 
 if __name__ == "__main__":

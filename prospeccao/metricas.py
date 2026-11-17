@@ -49,7 +49,7 @@ def preparar_dataframe(df: pd.DataFrame, agora: datetime | None = None) -> pd.Da
     df.columns = [c.strip() for c in df.columns]
     for coluna in ("clinica", "bairro", "cidade", "telefone", "site",
                    "avaliacoes", "segmento", "status", "resposta", "variante",
-                   "etapa", "menu", "versao_textos", "estagio",
+                   "etapa", "menu", "versao_textos", "estagio", "followups",
                    "ultimo_envio", "atualizado_em"):
         if coluna not in df.columns:
             df[coluna] = ""
@@ -68,9 +68,16 @@ def preparar_dataframe(df: pd.DataFrame, agora: datetime | None = None) -> pd.Da
     df["status"] = df["status"].replace({"": "desconhecido"})
     df["whatsapp"] = df["telefone"].map(link_whatsapp)
     # Apenas respostas humanas contam como "respondeu"; opt-out é contabilizado à parte.
-    df["respondeu"] = df["resposta"] == "respondeu"
+    # Depois da 2ª etapa (apresentação da curta / resumo da completa) a coluna
+    # resposta volta a "aguardando", mas uma pessoa já respondeu: conta também.
+    df["respondeu"] = (
+        (df["resposta"] == "respondeu")
+        | (df["etapa"] == "resumo")
+        | ((df["variante"] == "curta") & (df["etapa"] == "apresentacao"))
+    )
+    # nao_contatar + "sem resposta" = encerrado por falta de retorno (não é opt-out).
     df["opt_out"] = (df["resposta"] == "sem interesse") | (
-        df["status"] == "nao_contatar"
+        (df["status"] == "nao_contatar") & (df["resposta"] != "sem resposta")
     )
 
     ref = agora or datetime.now()
@@ -84,6 +91,8 @@ def preparar_dataframe(df: pd.DataFrame, agora: datetime | None = None) -> pd.Da
         & df["resposta_bruta"].isin(RESPOSTAS_EM_ABERTO)
         & df["ultimo_envio_dt"].notna()
         & (df["dias_uteis_sem_resposta"] >= 2)
+        # Padrão do script: no máximo 1 follow-up (--max-followups 1).
+        & (pd.to_numeric(df["followups"], errors="coerce").fillna(0) < 1)
     )
     return df
 
@@ -104,8 +113,8 @@ def aplicar_filtros(df: pd.DataFrame, f: dict) -> pd.DataFrame:
     out = out[mascara_bairro]
     if f["busca"]:
         mascara = (
-            out["clinica"].str.contains(f["busca"], case=False, na=False)
-            | out["telefone"].str.contains(f["busca"], na=False)
+            out["clinica"].str.contains(f["busca"], case=False, na=False, regex=False)
+            | out["telefone"].str.contains(f["busca"], na=False, regex=False)
         )
         out = out[mascara]
     if f["nota_min"] > 0:

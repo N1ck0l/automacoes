@@ -32,8 +32,9 @@ def carregar_dados(caminho: str, mtime: float) -> pd.DataFrame:
     return preparar_dataframe(df)
 
 
-@st.cache_data(show_spinner=False)
 def mtime_csv(caminho: str) -> float:
+    # Sem cache de propósito: o mtime é a chave que invalida carregar_dados
+    # quando o script grava o CSV.
     return Path(caminho).stat().st_mtime
 
 

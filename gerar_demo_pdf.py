@@ -1,4 +1,8 @@
-# Gera demonstracao.pdf (1 página) a partir da simulação em index.html.
+# Gera demonstracao.pdf (1 página) a partir da simulação em index.html,
+# e a imagem demonstracao.png (é ela que vai anexada na 2ª etapa).
+#   python gerar_demo_pdf.py                  # sobrescreve os arquivos do projeto
+#   python gerar_demo_pdf.py --saida X.pdf    # gera em outro lugar (para conferir)
+import argparse
 import tempfile
 from pathlib import Path
 
@@ -7,9 +11,9 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-from reportlab.platypus import Paragraph, Table, TableStyle
+from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
 BASE = Path(__file__).resolve().parent
 HTML = BASE / "index.html"
@@ -60,11 +64,46 @@ def par(txt: str, size: float = 8.4, cor=TEXTO, bold: bool = False,
     return Paragraph(txt, estilo)
 
 
+def lado_a_lado(esquerda: list, direita: list, largura: float, vao: float,
+                estilo_esq: list, estilo_dir: list) -> Table:
+    """Duas caixas na mesma linha, com a MESMA altura e ocupando `largura` inteira.
+
+    Uma tabela só (coluna do meio vazia = vão): as caixas ficam alinhadas no
+    topo e na base, e a borda direita bate com a margem da página.
+    """
+    col = (largura - vao) / 2
+
+    def empilhar(itens: list) -> list:
+        # Uma célula por caixa: cada lado mantém o próprio espaçamento entre
+        # itens (linhas compartilhadas abriam buracos no lado mais curto).
+        pilha = []
+        for i, item in enumerate(itens):
+            if i:
+                pilha.append(Spacer(1, 4.2))
+            pilha.append(item)
+        return pilha
+
+    t = Table([[empilhar(esquerda), "", empilhar(direita)]], colWidths=[col, vao, col])
+    comandos = [("LEFTPADDING", (1, 0), (1, -1), 0), ("RIGHTPADDING", (1, 0), (1, -1), 0),
+                ("VALIGN", (0, 0), (-1, -1), "TOP")]
+    for coluna, estilo in ((0, estilo_esq), (2, estilo_dir)):
+        for cmd, *args in estilo:
+            comandos.append((cmd, (coluna, 0), (coluna, -1), *args))
+    t.setStyle(TableStyle(comandos))
+    return t
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--saida", type=Path, default=SAIDA,
+                        help="PDF de saída (a imagem .png é gerada ao lado)")
+    saida = parser.parse_args().saida.resolve()
+
     img = capturar_celular()
 
-    c = canvas.Canvas(str(SAIDA), pagesize=A4)
+    c = canvas.Canvas(str(saida), pagesize=A4)
     c.setTitle("Automações para Clínicas — Demonstração")
+    c.setAuthor("Nickolas")
 
     # ---------------- cabeçalho ----------------
     cab_h = 27 * mm
@@ -73,7 +112,7 @@ def main() -> None:
     c.setFillColor(DOURADO)
     c.rect(0, H - cab_h, W, 1.2 * mm, stroke=0, fill=1)
     c.setFont("Helvetica-Bold", 7.4)
-    c.drawCentredString(W / 2, H - 6.2 * mm, "RELATÓRIO EXECUTIVO · AUTOMAÇÕES PARA CLÍNICAS")
+    c.drawCentredString(W / 2, H - 6.2 * mm, "AUTOMAÇÕES PARA CLÍNICAS")
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 17)
     c.drawCentredString(W / 2, H - 13 * mm, "Atendimento Inteligente & Gestão Fiscal")
@@ -85,7 +124,7 @@ def main() -> None:
     c.setFont("Helvetica", 7.5)
     c.drawCentredString(
         W / 2, H - 23 * mm,
-        "Documento ilustrativo · arquitetura já implantada em clínicas odontológicas e médicas")
+        "Exemplo ilustrativo · solução já em funcionamento em uma clínica médica da região")
 
     y = H - cab_h - 7 * mm
 
@@ -108,7 +147,6 @@ def main() -> None:
 
     # coluna esquerda: print do celular
     img_w = 52 * mm
-    from reportlab.lib.utils import ImageReader
     ir = ImageReader(str(img))
     iw, ih = ir.getSize()
     img_h = img_w * ih / iw
@@ -145,7 +183,6 @@ def main() -> None:
 
     # antes / depois
     ty -= 4 * mm
-    col_w = (larg_dir - 3 * mm) / 2
     antes = [
         par("HOJE", 8.2, VERMELHO, True),
         par("• mensagens espalhadas ao longo do dia", 7.9),
@@ -158,22 +195,15 @@ def main() -> None:
         par("• queixa e dados já resumidos", 7.9),
         par("• recepção recebe tudo organizado", 7.9),
     ]
-    t_antes = Table([[a] for a in antes], colWidths=[col_w - 8])
-    t_depois = Table([[d] for d in depois], colWidths=[col_w - 8])
-    for t, fundo in ((t_antes, VERMELHO_CLARO), (t_depois, VERDE_CLARO)):
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), fundo),
-            ("BOX", (0, 0), (-1, -1), 0.6, BORDA),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("TOPPADDING", (0, 0), (-1, -1), 2.6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.6),
-        ]))
-    _, h_a = t_antes.wrapOn(c, col_w, H)
-    _, h_d = t_depois.wrapOn(c, col_w, H)
-    t_antes.drawOn(c, x_dir, ty - h_a)
-    t_depois.drawOn(c, x_dir + col_w + 3 * mm, ty - h_d)
-    y = min(ty - h_a, ty - h_d, y - img_h) - 11 * mm
+    def caixa(fundo):
+        return [("BACKGROUND", fundo), ("BOX", 0.6, BORDA), ("LEFTPADDING", 6),
+                ("RIGHTPADDING", 5), ("TOPPADDING", 2.6), ("BOTTOMPADDING", 2.6)]
+
+    t_comp = lado_a_lado(antes, depois, larg_dir, 3 * mm,
+                         caixa(VERMELHO_CLARO), caixa(VERDE_CLARO))
+    _, h_comp = t_comp.wrapOn(c, larg_dir, H)
+    t_comp.drawOn(c, x_dir, ty - h_comp)
+    y = min(ty - h_comp, y - img_h) - 11 * mm
 
     # ---------------- etapa 2: NFS-e ----------------
     c.setFillColor(DOURADO)
@@ -192,14 +222,13 @@ def main() -> None:
     p2.drawOn(c, M, y - h2)
     y -= h2 + 5 * mm
 
-    col2 = (W - 2 * M - 5 * mm) / 2
     manual = [
         par("PROCESSO MANUAL — COMO FUNCIONA HOJE", 8.2, CINZA, True),
         par("<b>1.</b> atendimento concluído, dados anotados ou repassados", 7.9),
         par("<b>2.</b> digitação no sistema, campo a campo", 7.9),
         par("<b>3.</b> conferência manual para evitar erro", 7.9),
         par("<b>4.</b> validação repetida para cada nota", 7.9),
-        [par("vários minutos por nota, com risco de erro", 7.9, VERMELHO, True)],
+        par("vários minutos por nota, com risco de erro", 7.9, VERMELHO, True),
     ]
     auto = [
         par("COM AUTOMAÇÃO — COMO PASSARIA A FUNCIONAR", 8.2, AZUL, True),
@@ -207,32 +236,18 @@ def main() -> None:
         par("<b>2.</b> nota gerada em poucos minutos", 7.9),
         par("<b>3.</b> equipe confere e valida em 1 clique", 7.9),
         par("<b>4.</b> NFS-e enviada ao paciente no WhatsApp", 7.9),
-        [par("poucos minutos · validação em um clique", 7.9, AZUL, True)],
+        par("poucos minutos · validação em um clique", 7.9, AZUL, True),
     ]
-    t_manual = Table([[x] for x in manual], colWidths=[col2 - 8])
-    t_auto = Table([[x] for x in auto], colWidths=[col2 - 8])
-    t_manual.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f4f5f7")),
-        ("BOX", (0, 0), (-1, -1), 0.6, BORDA),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 2.8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.8),
-    ]))
-    t_auto.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), AZUL_CLARO),
-        ("BOX", (0, 0), (-1, -1), 0.6, BORDA),
-        ("LINEBEFORE", (0, 0), (0, -1), 3, AZUL),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 2.8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.8),
-    ]))
-    _, h_m = t_manual.wrapOn(c, col2, H)
-    t_auto.wrapOn(c, col2, H)
-    t_manual.drawOn(c, M, y - h_m)
-    t_auto.drawOn(c, M + col2 + 5 * mm, y - h_m)
-    y -= h_m + 11 * mm
+    estilo_manual = [("BACKGROUND", colors.HexColor("#f4f5f7")), ("BOX", 0.6, BORDA),
+                     ("LEFTPADDING", 6), ("RIGHTPADDING", 5),
+                     ("TOPPADDING", 2.8), ("BOTTOMPADDING", 2.8)]
+    estilo_auto = [("BACKGROUND", AZUL_CLARO), ("BOX", 0.6, BORDA),
+                   ("LINEBEFORE", 3, AZUL), ("LEFTPADDING", 7), ("RIGHTPADDING", 5),
+                   ("TOPPADDING", 2.8), ("BOTTOMPADDING", 2.8)]
+    t_nfse = lado_a_lado(manual, auto, W - 2 * M, 5 * mm, estilo_manual, estilo_auto)
+    _, h_nfse = t_nfse.wrapOn(c, W - 2 * M, H)
+    t_nfse.drawOn(c, M, y - h_nfse)
+    y -= h_nfse + 11 * mm
 
     # ---------------- como funciona ----------------
     c.setFillColor(DOURADO)
@@ -253,7 +268,7 @@ def main() -> None:
             "notas validadas em um clique", 8),
     ]
     t_passos = Table([[p for p in passos]],
-                     colWidths=[(W - 2 * M - 6 * mm) / 3] * 3)
+                     colWidths=[(W - 2 * M) / 3] * 3)
     t_passos.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.white),
         ("BOX", (0, 0), (-1, -1), 0.6, BORDA),
@@ -292,6 +307,9 @@ def main() -> None:
     c.setFont("Helvetica", 7.6)
     c.drawCentredString(W / 2, y - 30.5 * mm, "wa.me/5579981677954")
     y -= cta_h
+    if y < 14 * mm:  # o rodapé fica em 8 mm: texto a mais invadiria o rodapé
+        raise SystemExit(f"ERRO: o conteúdo passou do fim da página ({y / mm:.1f} mm). "
+                         "Encurte os textos antes de gerar.")
 
     # ---------------- rodapé ----------------
     c.setFillColor(CINZA)
@@ -303,14 +321,14 @@ def main() -> None:
 
     c.showPage()
     c.save()
-    print(f"PDF gerado: {SAIDA}")
+    print(f"PDF gerado: {saida}")
 
     import shutil
     import subprocess
     if shutil.which("pdftoppm"):
-        png_base = SAIDA.with_suffix("")
+        png_base = saida.with_suffix("")
         subprocess.run(
-            ["pdftoppm", "-png", "-r", "180", "-singlefile", str(SAIDA), str(png_base)],
+            ["pdftoppm", "-png", "-r", "180", "-singlefile", str(saida), str(png_base)],
             check=True,
         )
         print(f"Imagem gerada: {png_base}.png")
@@ -322,9 +340,9 @@ def main() -> None:
             print("AVISO: demonstracao.png NÃO foi atualizada "
                   "(instale o Poppler ou 'pip install pymupdf').")
         else:
-            with pymupdf.open(str(SAIDA)) as doc:
-                doc[0].get_pixmap(dpi=180).save(str(SAIDA.with_suffix(".png")))
-            print(f"Imagem gerada: {SAIDA.with_suffix('.png')}")
+            with pymupdf.open(str(saida)) as doc:
+                doc[0].get_pixmap(dpi=180).save(str(saida.with_suffix(".png")))
+            print(f"Imagem gerada: {saida.with_suffix('.png')}")
 
 
 if __name__ == "__main__":

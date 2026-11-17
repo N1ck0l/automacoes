@@ -66,6 +66,39 @@ class TestMetricasDashboard(unittest.TestCase):
         prep = preparar_dataframe(df, agora=datetime(2026, 11, 12, 14, 0))
         self.assertEqual(list(prep["followup_pendente"]), [True, False, False])
 
+    def test_followup_ja_feito_nao_fica_pendente(self):
+        df = pd.DataFrame([
+            {"clinica": "A", "status": "enviado", "resposta": "aguardando",
+             "ultimo_envio": "2026-11-05T10:00:00", "followups": "1",
+             "telefone": "5579999990001"},
+        ])
+        prep = preparar_dataframe(df, agora=datetime(2026, 11, 12, 14, 0))
+        self.assertFalse(prep.iloc[0]["followup_pendente"])
+
+    def test_segunda_etapa_enviada_conta_como_respondeu(self):
+        # Após a apresentação/resumo, "resposta" volta a "aguardando".
+        df = preparar_dataframe(pd.DataFrame([
+            {"clinica": "A", "status": "enviado", "resposta": "aguardando",
+             "variante": "curta", "etapa": "apresentacao"},
+            {"clinica": "B", "status": "enviado", "resposta": "aguardando",
+             "variante": "completa", "etapa": "resumo"},
+            {"clinica": "C", "status": "enviado", "resposta": "aguardando",
+             "variante": "completa", "etapa": "apresentacao"},
+        ]))
+        self.assertEqual(list(df["respondeu"]), [True, True, False])
+
+    def test_busca_com_caractere_especial_nao_quebra(self):
+        df = preparar_dataframe(pd.DataFrame([
+            {"clinica": "Dra. Ana (Ortodontia)", "status": "pendente",
+             "telefone": "5579999990001"},
+        ]))
+        res = aplicar_filtros(df, {
+            "segmento": ["(sem segmento)"], "status": ["pendente"],
+            "resposta": ["sem resposta"], "bairro": ["(sem bairro)"],
+            "busca": "(orto", "nota_min": 0,
+        })
+        self.assertEqual(len(res), 1)
+
     def test_aplicar_filtros_basico(self):
         df = preparar_dataframe(pd.DataFrame([
             {"clinica": "Odonto Prime", "segmento": "odonto", "status": "pendente",
@@ -177,10 +210,11 @@ class TestMelhoriasNucleo(unittest.TestCase):
             pw.resposta_para_robo(["Ola! Qual o seu nome para iniciarmos?"]),
             "Nickolas",
         )
-        self.assertIn(
-            "administrativo",
-            pw.resposta_para_robo(["Como posso ajudar voce hoje?"]).lower(),
-        )
+        # Saudação ("como posso ajudar?") não é menu: nada é enviado.
+        self.assertIsNone(pw.resposta_para_robo(["Como posso ajudar voce hoje?"]))
+        self.assertIsNone(pw.resposta_para_robo(
+            ["Olá, espero que esteja bem\nMe chamo Gabi, sou a secretária de Dr. Matheus "
+             "Borges. Como posso te ajudar?"]))
         # Negativa e opt-out sem acento
         self.assertTrue(pw.resposta_negativa(["Agora nao, ja contratamos outra empresa"]))
         bolhas = [

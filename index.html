@@ -745,7 +745,7 @@
       </div>
       <ul class="hero-trust">
         <li>Roda no WhatsApp atual da clínica, sem trocar de número ou sistema</li>
-        <li>Já implantado na região</li>
+        <li>Já em funcionamento em uma clínica médica da região</li>
       </ul>
     </div>
     <div class="hero-previa" aria-hidden="true">
@@ -849,7 +849,7 @@
               <div class="msg recebida escondida">Particular<span class="hora">09:14</span></div>
               <div class="msg enviada escondida">Perfeito. Prefere manhã ou tarde? Tem preferência de dia?<span class="hora">09:14</span></div>
               <div class="msg recebida escondida">Tarde, quinta-feira se possível<span class="hora">09:15</span></div>
-              <div class="msg enviada escondida">Registrado! Vou encaminhar à recepção para confirmar o encaixe de quinta-feira à tarde. Uma ótima manhã!<span class="hora">09:15</span></div>
+              <div class="msg enviada escondida">Registrado! Vou encaminhar à recepção para confirmar o encaixe de quinta-feira à tarde. Tenha uma ótima manhã!<span class="hora">09:15</span></div>
             </div>
             <div class="wa-input">Mensagem</div>
           </div>
@@ -1007,7 +1007,7 @@
   <div class="container">
     <div class="secao-titulo reveal">Catálogo completo</div>
     <h2 class="reveal">Outras soluções sob medida</h2>
-    <p class="secao-sub reveal">Além da triagem no WhatsApp e da NFS-e, estruturamos o ecossistema digital completo para clínicas e empresas de serviço.</p>
+    <p class="secao-sub reveal">Além da triagem no WhatsApp e da NFS-e, desenvolvo sob medida outras soluções digitais para clínicas e empresas de serviço.</p>
 
     <div class="catalogo-filtros reveal" role="group" aria-label="Filtrar soluções por categoria">
       <button type="button" class="catalogo-btn ativo" data-cat="todas" aria-pressed="true">Todas (8)</button>
@@ -1185,6 +1185,16 @@
   /* ---------- personalização por URL (?clinica=...&seg=odonto|medico) & cenários ---------- */
   var params = new URLSearchParams(window.location.search);
   var clinicaParam = (params.get("clinica") || "").trim().slice(0, 60);
+
+  // "do Consultório X" / "do Dr. Y" / "da Clínica Z": mesma regra de artigo()
+  // em prospeccao_whatsapp.py (INICIOS_MASCULINOS).
+  var INICIOS_MASCULINOS = ["dr ", "dr. ", "grupo ", "centro ", "instituto ",
+    "consultório ", "consultorio ", "hospital ", "espaço ", "espaco ", "núcleo ",
+    "nucleo ", "complexo ", "laboratório ", "laboratorio ", "dentista "];
+  function contracaoDe(nome) {
+    var baixo = nome.toLowerCase();
+    return INICIOS_MASCULINOS.some(function (p) { return baixo.indexOf(p) === 0; }) ? "do" : "da";
+  }
   var segParam = (params.get("seg") || "").trim().toLowerCase();
 
   if (clinicaParam) {
@@ -1223,7 +1233,7 @@
         { tipo: "recebida", hora: "09:14", texto: "Particular" },
         { tipo: "enviada", hora: "09:14", texto: "Perfeito. Prefere manhã ou tarde? Tem preferência de dia?" },
         { tipo: "recebida", hora: "09:15", texto: "Tarde, quinta-feira se possível" },
-        { tipo: "enviada", hora: "09:15", texto: "Registrado! Vou encaminhar à recepção para confirmar o encaixe de quinta-feira à tarde. Uma ótima manhã!" }
+        { tipo: "enviada", hora: "09:15", texto: "Registrado! Vou encaminhar à recepção para confirmar o encaixe de quinta-feira à tarde. Tenha uma ótima manhã!" }
       ]
     },
     medico: {
@@ -1265,7 +1275,7 @@
         { tipo: "recebida", hora: "14:03", texto: "1" },
         { tipo: "enviada", hora: "14:03", texto: "Presença confirmada! Para agilizar sua nota fiscal após o atendimento, pode informar seu CPF e e-mail?" },
         { tipo: "recebida", hora: "14:04", texto: "CPF 123.456.789-00 e mariana@email.com" },
-        { tipo: "enviada", hora: "14:04", texto: "Tudo pronto, Mariana! Assim que a consulta concluir, enviaremos sua NFS-e por aqui mesmo. Até amanhã!" }
+        { tipo: "enviada", hora: "14:04", texto: "Tudo pronto, Mariana! Assim que a consulta terminar, enviaremos sua NFS-e por aqui mesmo. Até amanhã!" }
       ]
     },
     pos_consulta: {
@@ -1309,7 +1319,9 @@
     var dados = CENARIOS[chave] || CENARIOS.odonto;
     cenarioAtual = chave;
     botoesCenario.forEach(function (b) {
-      b.classList.toggle("ativo", b.getAttribute("data-cenario") === chave);
+      var ativo = b.getAttribute("data-cenario") === chave;
+      b.classList.toggle("ativo", ativo);
+      b.setAttribute("aria-pressed", ativo ? "true" : "false");
     });
     var passos = dados.passos || PASSOS_PADRAO;
     chips.forEach(function (c, i) {
@@ -1503,7 +1515,7 @@
     if (!linksWa.length) return;
     var partes = ["Olá Nickolas,"];
     if (clinicaParam) {
-      partes.push("sou da " + clinicaParam + " e");
+      partes.push("sou " + contracaoDe(clinicaParam) + " " + clinicaParam + " e");
     }
     partes.push("gostaria de agendar uma demonstração das automações para nossa clínica");
     var base = "https://wa.me/5579981677954?text=";

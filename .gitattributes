@@ -1,0 +1,7 @@
+# PDF/imagens são binários: sem conversão de quebra de linha (LF<->CRLF),
+# que corromperia os offsets internos do demonstracao.pdf.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary

@@ -19,7 +19,7 @@ banimento de chip pela Meta.
 | `dashboard.py` | Dashboard Streamlit do `prospeccao.csv` (KPIs, gráficos, filtros e tabela com links) |
 | `test_prospeccao.py` + `test_minerador.py` + `test_dashboard.py` | 175 testes do núcleo anti-ban, modo automático, mineração e métricas do dashboard |
 | `index.html` | Demonstração interativa para enviar ao cliente (é a página do GitHub Pages): simulação da triagem no WhatsApp + comparação NFS-e + CTA |
-| `demonstracao.pdf` | Resumo de 1 página da demonstração (print da simulação + CTA) — anexado automaticamente na 2ª etapa (apresentação/resumo), quando a clínica responde; gerado pelo `gerar_demo_pdf.py` |
+| `demonstracao.pdf` / `.png` | Resumo de 1 página da demonstração (print da simulação + CTA), gerado pelo `gerar_demo_pdf.py` (`--saida X.pdf` gera em outro lugar para conferir). O arquivo indicado em `mensagens.json` → `demonstracao.pdf` (hoje o `.png`, que abre como imagem no WhatsApp) é anexado automaticamente na 2ª etapa; se falhar, o log diz em qual etapa (`[AVISO] ... não anexado (...)`) |
 | `gerar_demo_pdf.py` | Regenera `demonstracao.pdf` a partir do `index.html` (requer `reportlab` + Playwright) |
 | `logs/` | Log diário do modo automático (`automatico_AAAA-MM-DD.log`) |
 | `termos_mineracao.txt` | Termos do rodízio semanal do minerador |
@@ -207,14 +207,19 @@ streamlit run dashboard.py
 python prospeccao_whatsapp.py --automatico --limite-dia 10 --atraso-max 40 --resumo-para 5579981677954
 ```
 
-Envia **sem operador**, até a cota do dia (10, somando follow-ups e
-apresentações):
+Envia **sem operador**, até a cota do dia (10, somando aberturas e
+follow-ups; a 2ª etapa tem teto próprio):
 1. **Follow-ups**: quem recebeu há **2 dias úteis** e não respondeu (ou só o
-   robô respondeu) — no máximo 1 por clínica.
+   robô respondeu) — no máximo 1 por clínica. Usam no máximo **metade da
+   cota** (`--reserva-novos 50`, em %): a outra metade é das clínicas novas.
+   Se não houver novas suficientes, os follow-ups ocupam a sobra.
 2. **Novos contatos** `pendente` — **celulares primeiro, depois fixos** (número
    sem WhatsApp é detectado sem enviar nada e vira `sem_whatsapp`).
 3. Confere as entregas, lê as respostas, executa as ações automáticas (abaixo)
    e manda um **resumo para o seu WhatsApp** (`--resumo-para`).
+4. Quem já recebeu o follow-up, continua sem resposta há 2 dias úteis **e teve
+   a conversa conferida nesta rodada** é encerrado (`nao_contatar` +
+   `sem resposta`; não é opt-out).
 
 Começa às **9h** + um atraso sorteado de 0 a `--atraso-max` minutos (para não
 enviar sempre no mesmo minuto).
