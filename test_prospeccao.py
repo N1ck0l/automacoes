@@ -16,7 +16,19 @@ from contextlib import redirect_stdout
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import testes_seguros  # noqa: F401  (blindagem: ver testes_seguros.py)
+import prospeccao.trava as trava
 import prospeccao_whatsapp as pw
+
+# Os testes simulam o motor 'web'; o config.local.json do operador não interfere.
+pw.MOTOR = "web"
+# Nenhum teste pode tocar na trava, no banco, nos backups nem na lista de
+# números da ponte REAIS (nem bloquear o envio agendado).
+_ISOLADO = Path(tempfile.mkdtemp())
+trava.ARQUIVO_TRAVA = pw.ARQUIVO_TRAVA = _ISOLADO / ".envio.lock"
+pw.ARQUIVO_BANCO = _ISOLADO / "prospeccao.db"
+pw.PASTA_BACKUPS = _ISOLADO / "backups"
+pw.ARQUIVO_NUMEROS_PONTE = _ISOLADO / "numeros_monitorados.json"
 
 
 class BasePw(unittest.TestCase):
@@ -714,6 +726,11 @@ class TestModoAutomatico(BasePw):
             "conferidas": 0, "nao_verificaveis": 0, "problemas": [], "respostas": [], "optouts": [],
             "automaticas": [], "erro": None}
         pw.ARQUIVO_TRAVA = self.tmpdir / ".envio.lock"
+        # A TravaEnvio lê o caminho do módulo prospeccao.trava: sem isto os
+        # testes usavam o .envio.lock REAL e falhavam quando o envio agendado
+        # (ou o vigia) estava rodando.
+        self._trava_original = trava.ARQUIVO_TRAVA
+        trava.ARQUIVO_TRAVA = pw.ARQUIVO_TRAVA
         pw.PASTA_LOGS = self.tmpdir / "logs"
         pw.dia_util = lambda agora=None: True
         falsa = type("SessaoFalsa", (_SessaoFalsa,), {
@@ -736,6 +753,7 @@ class TestModoAutomatico(BasePw):
     def tearDown(self):
         (_, pw.ARQUIVO_TRAVA, pw.PASTA_LOGS, pw.dia_util, pw.SessaoWeb,
          pw.notificar_windows, pw.verificar_conversas) = self._orig
+        trava.ARQUIVO_TRAVA = self._trava_original
         super().tearDown()
 
     def _rodar(self, roteiro):
@@ -1058,6 +1076,29 @@ class TestMenuDeRobo(unittest.TestCase):
     def test_sem_menu(self):
         self.assertIsNone(pw.opcao_atendente(["Olá! Como posso ajudar?",
                                               "Ligue 1234 para falar com a gente"]))
+
+    def test_robo_que_pede_nome_e_motivo_recebe_identificacao(self):
+        secretaria = ("Olá! 😊 Seja bem-vindo(a) ao nosso atendimento odontológico.\n\n"
+                      "Meu nome é Marta, sou secretária da Dra. Exemplo.\n\n"
+                      "Para agilizar seu atendimento, por favor informe:\n\n"
+                      "👉 Nome e sobrenome\n\nE me diga qual opção você deseja:\n\n"
+                      "1️⃣ Avaliação para clareamento\n2️⃣ Exodontia de sisos\n"
+                      "4️⃣ Consulta de urgência")
+        ausente = ("No momento estamos indisponíveis.\n\nPara agilizar seu atendimento, "
+                   "você pode já nos informar:\n👉 Nome\n👉 Motivo do contato")
+        boas_vindas = ("Seja bem-vindo à Clínica Beta Odontologia 💚\nVamos iniciar o "
+                    "seu atendimento e gostariamos de saber qual seu nome?")
+        for texto in (secretaria, ausente, boas_vindas):
+            self.assertEqual(pw.resposta_para_robo([texto]), "Nickolas", texto)
+
+    def test_identificacao_valida_e_sem_cara_de_paciente(self):
+        contato = {"clinica": "Dra. Exemplo Odontologia", "bairro": "Jardins",
+                   "cidade": "Aracaju"}
+        for _ in range(20):
+            texto = pw.montar_identificacao(contato)
+            self.assertIsNone(pw.validar_mensagem(texto, contato, "identificacao"), texto)
+            self.assertIn("Nickolas", texto)
+            self.assertIn("gestão", texto)
 
 
 class TestDiasUteis(unittest.TestCase):

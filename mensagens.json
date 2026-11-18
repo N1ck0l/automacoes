@@ -1,18 +1,18 @@
 {
-  "_ajuda": "Textos da prospecção. Tokens: {clinica} {a_clinica} {da_clinica} {bairro} {cidade} {local} {nota} {saudacao} {gancho} {autoridade} {case} {cta} {material}. Spintax: {opção A|opção B}. {local} vira 'no <bairro>' / 'na <bairro>' (Farolândia, Atalaia, Suíça...) ou, sem bairro válido, 'em <cidade>'. {nota} é a nota do Google (ex.: '4,9') e só existe se for 4,5 ou mais: textos com {nota} só são usados nesses casos. {material} (só em followups_pos_resposta) vira 'a apresentação' ou 'o resumo', conforme o que foi enviado. Tom: SEMPRE formal e profissional (sem diminutivos, emojis, gírias ou abreviações como 'seg a qui'), em 1ª pessoa do singular (eu, nunca 'nós'), sem pressão, sem pedir reunião no 1º contato, com opt-out fácil. Quem lê o WhatsApp da clínica costuma ser a RECEPÇÃO: dizer com clareza o que é oferecido e pedir que encaminhe ao responsável pela gestão. Só afirmar o que é verdade: triagem pelo WhatsApp e NFS-e já implantadas em UMA clínica MÉDICA da região (singular; nunca citar o nome dela). Nada de números inventados.",
-  "versao": "2026-11-17",
+  "_ajuda": "Textos da prospecção. Tokens: {clinica} {a_clinica} {da_clinica} {bairro} {cidade} {local} {nota} {saudacao} {gancho} {autoridade} {case} {cta} {material}. Spintax: {opção A|opção B}. {local} vira 'no <bairro>' / 'na <bairro>' (Farolândia, Atalaia, Suíça...) ou, sem bairro válido, 'em <cidade>'. {nota} é a nota do Google (ex.: '4,9') e só existe se for 4,5 ou mais: textos com {nota} só são usados nesses casos. {material} (só em followups_pos_resposta) vira 'a apresentação' ou 'o resumo', conforme o que foi enviado. Tom: profissional E caloroso, como uma clínica responde a um fornecedor: parágrafos curtos (uma ideia por parágrafo, separados por linha em branco), agradecimentos com exclamação ('Agradeço pelo retorno!'), 'terei prazer em...' no lugar de condicionais em excesso, e encerramento positivo voltado para o outro ('Desejo muito sucesso a toda a equipe...'). Continua sem diminutivos, emojis, gírias ou abreviações como 'seg a qui', em 1ª pessoa do singular (eu, nunca 'nós'), sem pressão, sem pedir reunião no 1º contato, com opt-out fácil. Quem lê o WhatsApp da clínica costuma ser a RECEPÇÃO: dizer com clareza o que é oferecido e pedir que encaminhe ao responsável pela gestão. Só afirmar o que é verdade: triagem pelo WhatsApp e NFS-e já implantadas em UMA clínica MÉDICA da região (singular; nunca citar o nome dela). Nada de números inventados.",
+  "versao": "2026-11-18",
   "_versao": "Mude a 'versao' sempre que reescrever os textos: o resumo do teste A/B passa a contar só quem foi abordado com a versão atual (coluna versao_textos do CSV).",
   "saudacoes": {
     "manha": [
-      "Bom dia.",
+      "Bom dia!",
       "Bom dia, tudo bem?"
     ],
     "tarde": [
-      "Boa tarde.",
+      "Boa tarde!",
       "Boa tarde, tudo bem?"
     ],
     "noite": [
-      "Boa noite."
+      "Boa noite!"
     ],
     "qualquer": [
       "Olá, tudo bem?"
@@ -20,48 +20,72 @@
   },
   "_ab": "Teste A/B: cada clínica recebe, de forma fixa, a variante 'curta' (aberturas) ou 'completa' (estruturas). Quando uma PESSOA responde, o script envia a 2ª etapa: na curta, a apresentação (estruturas_apresentacao); na completa, o resumo oferecido no CTA (estruturas_resumo).",
   "aberturas": [
-    "{saudacao} Meu nome é Nickolas e desenvolvo automações para clínicas em {cidade}, como a triagem de pacientes pelo WhatsApp e a emissão de NFS-e. Posso encaminhar uma breve apresentação para {a_clinica}?",
-    "{saudacao} Meu nome é Nickolas e trabalho com a automação do atendimento e das rotinas administrativas de clínicas em {cidade}. Gostaria de enviar uma breve apresentação para {a_clinica}; poderia me indicar o responsável pela gestão?",
-    "{saudacao} Meu nome é Nickolas e desenvolvo automações para clínicas em {cidade}. Vi a nota {nota} {da_clinica} no Google e gostaria de enviar uma breve apresentação. Posso encaminhá-la por aqui?"
+    "{saudacao}\n\nMeu nome é Nickolas e desenvolvo automações para clínicas em {cidade}, como a triagem de pacientes pelo WhatsApp e a emissão de NFS-e.\n\nPosso encaminhar uma breve apresentação para {a_clinica}?",
+    "{saudacao}\n\nMeu nome é Nickolas e trabalho com a automação do atendimento e das rotinas administrativas de clínicas em {cidade}.\n\nGostaria de enviar uma breve apresentação para {a_clinica}. Poderia me indicar o responsável pela gestão?",
+    "{saudacao}\n\nMeu nome é Nickolas e desenvolvo automações para clínicas em {cidade}. Vi a nota {nota} {da_clinica} no Google: parabéns pelo excelente trabalho!\n\nPosso encaminhar uma breve apresentação por aqui?"
   ],
   "estruturas_apresentacao": [
-    "Agradeço o retorno. Segue uma breve apresentação.\n\n{case}\n\n{cta_apresentacao}",
-    "Obrigado pela atenção. Segue, de forma breve, o trabalho que desenvolvo.\n\n{case}\n\n{cta_apresentacao}"
+    "Agradeço pelo retorno! Segue uma breve apresentação do meu trabalho.\n\n{case}\n\n{cta_apresentacao}",
+    "Muito obrigado pela atenção! Segue, de forma breve, o que desenvolvo.\n\n{case}\n\n{cta_apresentacao}"
   ],
   "ctas_apresentacao": [
-    "Caso faça sentido para a rotina da equipe, posso demonstrar o funcionamento em uma conversa breve e objetiva, online ou presencial. Tenho disponibilidade das 12h às 13h, após as 17h de segunda a quinta ou após as 16h às sextas. Se preferir, esclareço qualquer dúvida por aqui.",
-    "Se for oportuno, fico à disposição para uma demonstração objetiva e sem compromisso, com você ou com o responsável pela gestão (das 12h às 13h, após as 17h de segunda a quinta ou após as 16h às sextas). Caso não seja o momento, agradeço desde já a atenção."
+    "Se fizer sentido para a rotina da equipe, terei prazer em demonstrar o funcionamento em uma conversa breve, online ou presencial. Tenho disponibilidade das 12h às 13h, após as 17h de segunda a quinta e após as 16h às sextas.\n\nFico à disposição para qualquer dúvida por aqui!",
+    "Se for oportuno, terei prazer em fazer uma demonstração breve e sem compromisso, com você ou com o responsável pela gestão (das 12h às 13h, após as 17h de segunda a quinta e após as 16h às sextas).\n\nDesde já, agradeço pela atenção!"
   ],
   "estruturas_resumo": [
-    "Agradeço o retorno. Segue, de forma objetiva, como a automação funciona na prática:\n\n• Triagem pelo WhatsApp: o paciente informa o motivo do contato e a recepção recebe os dados já organizados, sem perguntas repetidas;\n• Emissão de NFS-e: os dados do atendimento são aproveitados e a nota fica pronta em poucos minutos, restando à equipe apenas validá-la com um clique.\n\nCaso tenham interesse, posso apresentar o funcionamento em uma conversa breve e objetiva, online ou presencial (das 12h às 13h, após as 17h de segunda a quinta ou após as 16h às sextas). Também fico à disposição por aqui.",
-    "Obrigado pela resposta. Em resumo, o funcionamento ocorre em duas frentes:\n\n• Atendimento pelo WhatsApp: as solicitações chegam estruturadas à recepção, com a queixa e a preferência de horário do paciente já resumidas;\n• Emissão de NFS-e: um processo normalmente manual passa a ser concluído em poucos minutos, com validação em um clique.\n\nSe fizer sentido, posso demonstrar na prática em uma conversa breve e sem compromisso (das 12h às 13h, após as 17h de segunda a quinta ou após as 16h às sextas). Caso não seja prioridade no momento, agradeço a atenção."
+    "Agradeço pelo retorno! Segue, de forma objetiva, como a automação funciona na prática:\n\n• Triagem pelo WhatsApp: o paciente informa o motivo do contato e a recepção recebe os dados já organizados, sem perguntas repetidas;\n• Emissão de NFS-e: os dados do atendimento são aproveitados e a nota fica pronta em poucos minutos, bastando validá-la com um clique.\n\nSe houver interesse, terei prazer em apresentar o funcionamento em uma conversa breve, online ou presencial (das 12h às 13h, após as 17h de segunda a quinta e após as 16h às sextas).\n\nFico à disposição por aqui!",
+    "Muito obrigado pela resposta! Em resumo, o funcionamento ocorre em duas frentes:\n\n• Atendimento pelo WhatsApp: as solicitações chegam à recepção com a queixa e a preferência de horário do paciente já resumidas;\n• Emissão de NFS-e: um processo normalmente manual passa a ser concluído em poucos minutos, com validação em um clique.\n\nSe fizer sentido, terei prazer em demonstrar na prática, em uma conversa breve e sem compromisso (das 12h às 13h, após as 17h de segunda a quinta e após as 16h às sextas).\n\nDesde já, agradeço pela atenção!"
   ],
   "autoridades": [
     "Meu nome é Nickolas e desenvolvo automações operacionais para clínicas em {cidade}.",
     "Meu nome é Nickolas e trabalho com a automação do atendimento e das rotinas administrativas de clínicas em {cidade}."
   ],
   "ganchos": [
-    "Entro em contato com {a_clinica}, {local}, porque grande parte do tempo da recepção costuma ser absorvida pelo atendimento inicial no WhatsApp, e é justamente nesse ponto que a automação reduz o retrabalho da equipe.",
+    "Entro em contato com {a_clinica}, {local}, porque grande parte do tempo da recepção costuma ser dedicada ao atendimento inicial no WhatsApp. É justamente nesse ponto que a automação reduz o retrabalho da equipe.",
     "Em clínicas como {a_clinica}, {local}, a recepção lida diariamente com um alto volume de mensagens, confirmações de agenda e dúvidas recorrentes.",
-    "Vi a nota {nota} {da_clinica} no Google, que reflete um excelente padrão de atendimento. Manter esse padrão no dia a dia exige uma recepção bem apoiada, mesmo nos horários de pico."
+    "Vi a nota {nota} {da_clinica} no Google: parabéns pelo excelente padrão de atendimento! Manter esse padrão no dia a dia exige uma recepção bem apoiada, mesmo nos horários de pico."
   ],
   "cases": [
-    "Em uma clínica médica da região, implantei uma triagem pelo WhatsApp que entrega à recepção a queixa do paciente já resumida, integrada à emissão automatizada de NFS-e: o preenchimento, antes manual, passou a levar poucos minutos, com validação em um clique.",
-    "Já estão em funcionamento, em uma clínica médica local, a triagem de pacientes pelo WhatsApp, feita antes de a recepção assumir a conversa, e a emissão automatizada de NFS-e, concluída em poucos minutos com validação em um clique."
+    "Em uma clínica médica da região, implantei uma triagem pelo WhatsApp que entrega à recepção a queixa do paciente já resumida.\n\nA emissão de NFS-e também foi automatizada: o preenchimento, antes manual, passou a levar poucos minutos, com validação em um clique.",
+    "Em uma clínica médica local, já estão em funcionamento duas automações: a triagem de pacientes pelo WhatsApp, feita antes de a recepção assumir a conversa, e a emissão de NFS-e, concluída em poucos minutos com validação em um clique."
   ],
   "ctas": [
-    "Caso faça sentido para {a_clinica}, posso enviar um breve resumo de como funcionaria na prática. Se este assunto for conduzido por outra pessoa, agradeço se puder encaminhar esta mensagem ao responsável pela gestão.",
-    "Posso encaminhar um resumo objetivo de como isso funciona no dia a dia da clínica? Caso o assunto seja de outro setor, agradeço o repasse à gestão; se não for relevante no momento, basta me avisar."
+    "Caso faça sentido para {a_clinica}, terei prazer em enviar um breve resumo de como funcionaria na prática.\n\nSe este assunto for conduzido por outra pessoa, agradeço se puder encaminhar esta mensagem ao responsável pela gestão.",
+    "Posso encaminhar um resumo objetivo de como isso funciona no dia a dia da clínica?\n\nCaso o assunto seja de outro setor, agradeço o repasse à gestão. Se não for relevante no momento, basta me avisar."
   ],
   "estruturas": [
-    "{saudacao}\n\n{autoridade} {gancho}\n\n{case}\n\n{cta}",
+    "{saudacao}\n\n{autoridade}\n\n{gancho}\n\n{case}\n\n{cta}",
     "{saudacao} {autoridade}\n\n{gancho}\n\n{case}\n\n{cta}"
   ],
-  "_despedidas": "Enviada UMA vez, automaticamente, quando a clínica diz que não tem interesse (status nao_contatar). Formal e breve; nunca reabre a conversa de venda.",
+  "_despedidas": "Enviada UMA vez, automaticamente, quando a clínica diz que não tem interesse (status nao_contatar). Calorosa e breve; nunca reabre a conversa de venda.",
   "despedidas": [
-    "Agradeço o retorno e a atenção. Fica registrado: não enviarei novas mensagens. Desejo muito sucesso à equipe {da_clinica}.",
-    "Obrigado pela resposta. Respeito a decisão e não voltarei a entrar em contato. Desejo um ótimo trabalho a toda a equipe {da_clinica}."
+    "Agradeço pelo retorno e pela gentileza da resposta!\n\nCompreendo perfeitamente e respeito a decisão; não enviarei novas mensagens.\n\nDesejo muito sucesso a toda a equipe {da_clinica}!",
+    "Muito obrigado pela resposta e pela atenção!\n\nRespeito a decisão e não voltarei a entrar em contato. Caso, futuramente, surja interesse, fico à disposição.\n\nDesejo um excelente trabalho a toda a equipe {da_clinica}!"
   ],
+  "_identificacoes_robo": "Enviada UMA vez quando o robô da clínica pede nome e/ou motivo do contato ('Nome e sobrenome', 'Motivo do contato', 'qual seu nome?'). Deixa claro que não é paciente, para a recepção não abrir um agendamento, e pede o contato da gestão.",
+  "identificacoes_robo": [
+    "Meu nome é Nickolas. Não sou paciente: desenvolvo automações para clínicas em {cidade} e gostaria de enviar uma breve apresentação ao responsável pela gestão {da_clinica}.\n\nPoderia me informar o nome e o melhor contato dessa pessoa?\n\nDesde já, agradeço pela atenção!",
+    "Meu nome é Nickolas e o motivo do contato é comercial, não se trata de agendamento: trabalho com a automação do atendimento e das rotinas administrativas de clínicas em {cidade}.\n\nGostaria de enviar uma breve apresentação ao responsável pela gestão {da_clinica}. Poderia me indicar essa pessoa?\n\nDesde já, agradeço pela atenção!"
+  ],
+  "_confirmacoes_email": "Resposta no WhatsApp quando a clínica pede a proposta por e-mail ('Pode enviar para o email X'). {email} é o endereço citado. Não promete horário: o envio do e-mail é feito pelo operador (rascunho no Gmail).",
+  "confirmacoes_email": [
+    "Muito obrigado pelo retorno!\n\nEncaminharei a proposta para o e-mail {email} em breve.\n\nDesde já, agradeço pela atenção!",
+    "Agradeço pelo retorno e pela indicação do e-mail!\n\nEm breve, envio a proposta para {email}, com uma demonstração interativa do funcionamento.\n\nDesejo um excelente dia a toda a equipe!"
+  ],
+  "_agradecimentos_indicacao": "Resposta quando a clínica repassa o cartão de contato da gestão. {indicado} é o primeiro nome da pessoa (ou 'a pessoa indicada').",
+  "agradecimentos_indicacao": [
+    "Muito obrigado pelo retorno e pela indicação!\n\nEntrarei em contato com {indicado} para apresentar a proposta.\n\nDesejo um excelente dia a toda a equipe {da_clinica}!"
+  ],
+  "_aberturas_indicado": "Primeira mensagem ao gestor indicado. {ola_indicado} vira 'Olá, Ana' (ou só 'Olá'); {da_clinica}/{a_clinica} são da clínica que indicou. O link da demonstração é acrescentado automaticamente.",
+  "aberturas_indicado": [
+    "{ola_indicado}, tudo bem? Meu nome é Nickolas e desenvolvo automações para clínicas em {cidade}. A equipe {da_clinica} me encaminhou seu contato como responsável pela gestão.\n\n{case}\n\n{cta_apresentacao}",
+    "{ola_indicado}. Meu nome é Nickolas e trabalho com a automação do atendimento e das rotinas administrativas de clínicas em {cidade}. Recebi seu contato da equipe {da_clinica}, como responsável pela gestão.\n\n{case}\n\n{cta_apresentacao}"
+  ],
+  "_email_proposta": "E-mail de proposta (vira rascunho no Gmail; nada é enviado sem você). {link_demo} é a demonstração personalizada; {meu_whatsapp}, o seu número formatado.",
+  "email_proposta": {
+    "assunto": "Automação do atendimento e da emissão de NFS-e | {clinica}",
+    "corpo": "Olá, tudo bem?\n\nMeu nome é Nickolas e desenvolvo automações para clínicas em {cidade}. A equipe {da_clinica} me indicou este e-mail para enviar a proposta.\n\nEm uma clínica médica da região, implantei duas automações:\n\n• Atendimento pelo WhatsApp: as solicitações chegam à recepção com a queixa e a preferência de horário do paciente já resumidas, sem perguntas repetidas;\n• Emissão de NFS-e: um processo normalmente manual passa a ser concluído em poucos minutos, com validação em um clique.\n\nPreparei uma demonstração interativa, que abre direto no navegador, sem precisar baixar nada: {link_demo}\n\nSe fizer sentido, terei prazer em apresentar o funcionamento em uma conversa breve e sem compromisso, online ou presencial (das 12h às 13h, após as 17h de segunda a quinta e após as 16h às sextas).\n\nDesde já, agradeço pela atenção!\n\nAtenciosamente,\nNickolas\nAutomações para clínicas | WhatsApp: {meu_whatsapp}"
+  },
   "demonstracao": {
     "_ajuda": "Demonstração da 2ª etapa (apresentação/resumo). 'pdf': arquivo anexado ao lado do script ('' = não anexa; troque para 'demonstracao.png' para enviar como imagem inline sem exigir download). 'html': URL da página interativa hospedada ('' = não envia o link).",
     "pdf": "demonstracao.png",
@@ -70,11 +94,11 @@
   },
   "_followups_pos_resposta": "Follow-up para quem JÁ respondeu e recebeu a apresentação/resumo (ex.: a recepção disse que encaminharia ao setor responsável). Não repete o pedido de encaminhamento; apenas confirma se o material chegou.",
   "followups_pos_resposta": [
-    "{saudacao} Gostaria apenas de confirmar se {material} que enviei chegou ao setor responsável {da_clinica}. Fico à disposição para esclarecer qualquer dúvida por aqui; se não for oportuno no momento, agradeço a atenção.",
-    "{saudacao} Retorno brevemente para saber se o responsável pela gestão {da_clinica} conseguiu avaliar {material} que encaminhei. Caso faça sentido, posso demonstrar o funcionamento em uma conversa breve; se não for prioridade agora, agradeço a atenção."
+    "{saudacao}\n\nGostaria apenas de confirmar se {material} que enviei chegou ao setor responsável {da_clinica}.\n\nFico à disposição para esclarecer qualquer dúvida por aqui. Desde já, agradeço pela atenção!",
+    "{saudacao}\n\nRetorno brevemente para saber se o responsável pela gestão {da_clinica} conseguiu avaliar {material} que encaminhei. Se fizer sentido, terei prazer em demonstrar o funcionamento em uma conversa breve.\n\nCaso não seja prioridade agora, agradeço pela atenção!"
   ],
   "followups": [
-    "{saudacao} Retomo brevemente minha mensagem anterior, para que não se perca na rotina do dia. Caso este assunto seja conduzido por outra pessoa, agradeço se puder encaminhá-la ao responsável pela gestão {da_clinica}. Se não for oportuno no momento, agradeço a atenção.",
-    "{saudacao} Gostaria apenas de confirmar se minha mensagem anterior sobre as automações para {a_clinica} chegou ao responsável pela gestão. Caso faça sentido, posso enviar um resumo objetivo; se não for prioridade agora, agradeço a atenção."
+    "{saudacao}\n\nRetomo brevemente minha mensagem anterior, para que não se perca na rotina do dia. Caso este assunto seja conduzido por outra pessoa, agradeço se puder encaminhá-la ao responsável pela gestão {da_clinica}.\n\nSe não for oportuno no momento, agradeço pela atenção!",
+    "{saudacao}\n\nGostaria apenas de confirmar se minha mensagem anterior sobre as automações para {a_clinica} chegou ao responsável pela gestão. Se fizer sentido, terei prazer em enviar um resumo objetivo.\n\nDesde já, agradeço pela atenção!"
   ]
 }

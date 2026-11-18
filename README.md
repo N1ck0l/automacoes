@@ -14,16 +14,17 @@ banimento de chip pela Meta.
 | `prospeccao/` | Módulos internos (`config.py`, `telefones.py`, `calendario.py`, `trava.py`, `classificador.py`, `metricas.py`) |
 | `mensagens.json` | Textos da abordagem e do follow-up (spintax + tokens) — edite aqui, não no código. Inclui `demonstracao`: `pdf` (anexado na 2ª etapa) e `html` (URL da demo interativa, enviada junto quando preenchida) |
 | `config.example.json` | Modelo de configuração regional (`cidade_padrao`, `feriados_locais`) — copie para `config.local.json` para personalizar |
-| `minerador_maps.py` | Minerador de empresas no Google Maps (Playwright) → `prospeccao.csv` |
-| `prospeccao.example.csv` | Modelo de cabeçalho do CSV de contatos (o `prospeccao.csv` real fica fora do Git) |
-| `dashboard.py` | Dashboard Streamlit do `prospeccao.csv` (KPIs, gráficos, filtros e tabela com links) |
+| `minerador_maps.py` | Minerador de empresas no Google Maps (Playwright) → `prospeccao.db` |
+| `prospeccao.db` | **Banco SQLite** com os contatos (tabela `contatos`) e o histórico de envios (`historico`). Fica fora do Git |
+| `prospeccao.example.csv` | Modelo de cabeçalho para importar contatos de um CSV |
+| `dashboard.py` | Dashboard Streamlit do `prospeccao.db` (KPIs, gráficos, filtros e tabela com links) |
 | `test_prospeccao.py` + `test_minerador.py` + `test_dashboard.py` | 175 testes do núcleo anti-ban, modo automático, mineração e métricas do dashboard |
 | `index.html` | Demonstração interativa para enviar ao cliente (é a página do GitHub Pages): simulação da triagem no WhatsApp + comparação NFS-e + CTA |
 | `demonstracao.pdf` / `.png` | Resumo de 1 página da demonstração (print da simulação + CTA), gerado pelo `gerar_demo_pdf.py` (`--saida X.pdf` gera em outro lugar para conferir). O arquivo indicado em `mensagens.json` → `demonstracao.pdf` (hoje o `.png`, que abre como imagem no WhatsApp) é anexado automaticamente na 2ª etapa; se falhar, o log diz em qual etapa (`[AVISO] ... não anexado (...)`) |
 | `gerar_demo_pdf.py` | Regenera `demonstracao.pdf` a partir do `index.html` (requer `reportlab` + Playwright) |
 | `logs/` | Log diário do modo automático (`automatico_AAAA-MM-DD.log`) |
 | `termos_mineracao.txt` | Termos do rodízio semanal do minerador |
-| `historico_envios.jsonl` | Auditoria local: todo envio confirmado é registrado aqui (fora do Git) |
+| `backup_pre_sqlite/` | `prospeccao.csv` e `historico_envios.jsonl` como estavam antes da migração para o banco (18/11/2026) |
 | `requirements.txt` | `playwright`, `selenium`, `streamlit`, `pandas`, `plotly`, `reportlab` |
 
 ## Como rodar
@@ -33,7 +34,7 @@ banimento de chip pela Meta.
 pip install -r requirements.txt
 playwright install chromium        # baixa o Chromium do Playwright
 
-# 2. Minerar empresas do Google Maps -> prospeccao.csv (dedup por telefone)
+# 2. Minerar empresas do Google Maps -> prospeccao.db (dedup por telefone)
 python minerador_maps.py --termo "clinica odontologica em Aracaju SE" --max 40
 python minerador_maps.py --termo "clinica medica em Aracaju SE" --max 30 --visivel
 python minerador_maps.py --termo "dentista em Aracaju" --dry-run   # só visualizar
@@ -82,7 +83,7 @@ Requisitos: Python 3.10+. O modo `manual` (padrão) não precisa de nada instala
   - Rolagem suave incremental no `div[role="feed"]` lateral até o limite;
   - Pausas aleatórias de 1–3s (`--delay-min`/`--delay-max`) entre navegações;
   - Fallback campo a campo: um elemento que falha não derruba a mineração.
-- **Saída**: integra direto no `prospeccao.csv` do script de envio —
+- **Saída**: integra direto no `prospeccao.db` do script de envio —
   **nunca sobrescreve** registros existentes; duplicidade verificada por
   **telefone** (higienizado). Gravação atômica com a biblioteca padrão.
 - **Aviso**: a mineração consulta dados públicos em baixo volume; respeite os
@@ -116,7 +117,7 @@ Requisitos: Python 3.10+. O modo `manual` (padrão) não precisa de nada instala
 - **Opt-out**: quem pediu para não ser contatado vira `nao_contatar` e nunca volta à fila — nem com `--reset`.
 - **Deduplicação + validação de telefone** no carregamento do CSV.
 - **Spintax**: saudação, gancho, autoridade, case e CTA variam a cada geração — nenhuma mensagem idêntica.
-- **Auditoria**: cada envio confirmado vira uma linha em `historico_envios.jsonl` (com `tipo`: `inicial`/`followup`).
+- **Auditoria**: cada envio confirmado vira uma linha na tabela `historico` do `prospeccao.db` (com `tipo`: `inicial`/`followup`).
 - **Ctrl+C seguro**: cada envio e cada resposta são gravados na hora.
 
 ## Personalizando os textos (`mensagens.json`)
@@ -137,7 +138,22 @@ Para outro arquivo de textos: `--mensagens outro.json`.
 
 ## Preparando os dados
 
-Edite `prospeccao.csv` mantendo o cabeçalho:
+Os contatos ficam no **banco SQLite** `prospeccao.db`. Na primeira execução,
+se ele ainda não existir, o `prospeccao.csv` e o `historico_envios.jsonl`
+antigos são copiados para o banco e guardados em `backup_pre_sqlite/`.
+
+Por que banco: o envio diário, o vigia, o minerador e o dashboard usam os
+mesmos dados ao mesmo tempo. Cada processo grava **só os campos que mudou**,
+numa transação, então um não apaga o que o outro acabou de gravar (com o CSV,
+quem salvava por último regravava o arquivo inteiro).
+
+- Ver no Excel: `python prospeccao_whatsapp.py --exportar-csv contatos.csv`
+  (é uma cópia: editar o CSV exportado não altera o banco).
+- Abrir o banco direto: qualquer visualizador de SQLite (ex.: DB Browser for SQLite).
+- Usar um CSV no lugar do banco (como antes): `--arquivo meu.csv`.
+
+O formato das colunas é o mesmo do CSV (ex.: para importar uma lista nova com
+`--arquivo`):
 
 ```csv
 clinica,bairro,cidade,telefone,site,avaliacoes,status,resposta,atualizado_em,ultimo_envio,followups
@@ -146,14 +162,14 @@ Ferraz Odontologia,São José,Aracaju,5579999631871,,,pendente,,,,
 
 - `telefone`: número internacional sem `+` (ex.: `5579999631871`). Números locais
   recebem o `55` automaticamente. Linhas com telefone inválido ou duplicado
-  ficam **fora da fila** (com aviso), mas **continuam no arquivo**.
+  ficam **fora da fila** (com aviso), mas **continuam guardadas**.
 - `site` e `avaliacoes`: preenchidos pelo minerador (`minerador_maps.py`).
 - `status`: `pendente`, `enviado` ou `nao_contatar` (opt-out).
 - `resposta`: `aguardando`, `respondeu`, `sem resposta` ou `sem interesse`.
 - `ultimo_envio` / `followups`: preenchidos automaticamente.
 - CSVs antigos sem as colunas novas continuam funcionando, e colunas extras
   que você adicionar são preservadas.
-- Sem CSV, apenas o `--preview` funciona (com exemplos fictícios); os demais
+- Sem contatos, apenas o `--preview` funciona (com exemplos fictícios); os demais
   modos param com erro, para nunca enviar a contatos de exemplo.
 
 ## Acompanhando os resultados
@@ -184,7 +200,7 @@ streamlit run dashboard.py
   variantes de texto usadas;
 - **Contatos**: tabela com links diretos de WhatsApp (`wa.me`) e site, mais
   download do CSV filtrado;
-- Os dados são relidos do `prospeccao.csv` a cada execução (use o botão
+- Os dados são relidos do `prospeccao.db` a cada execução (use o botão
   **Recarregar dados** após o minerador/atualizações).
 
 ## Modos de envio
@@ -200,6 +216,84 @@ streamlit run dashboard.py
   restrição de horário.
 - **Editar texto** (`[e]` na prévia): cole a mensagem (linhas vazias são
   mantidas) e termine com uma linha contendo apenas `.`.
+
+## Motor `api`: ponte Baileys e modo vigia
+
+Em vez do Chrome, o script pode falar com o WhatsApp por uma **ponte local**
+(`ponte_whatsapp/ponte.js`, biblioteca [Baileys](https://github.com/WhiskeySockets/Baileys),
+não oficial). Ela recebe as mensagens **na hora**, então o modo vigia responde
+em poucos minutos em vez de esperar o acompanhamento das 12h/14h/16h/18h.
+
+```bash
+cd ponte_whatsapp && npm install      # uma vez (Node 20+)
+node ponte_whatsapp/ponte.js          # deixe rodando; na 1ª vez, escaneie o QR
+python prospeccao_whatsapp.py --motor api --vigiar --resumo-para 5579981677954
+```
+
+- **QR Code**: aparece no terminal e em `ponte_whatsapp/qr.png`. Escaneie em
+  WhatsApp > Aparelhos conectados. A sessão fica em `ponte_whatsapp/.auth_baileys/`
+  (se o celular desconectar o aparelho, apague essa pasta e escaneie de novo).
+- **Motor padrão**: `"motor": "api"` no `config.local.json` faz o envio
+  diário, o acompanhamento e o `--verificar` usarem a ponte. Sem isso, continua
+  o Chrome (`web`), que segue disponível como reserva.
+- **Vigia** (`--vigiar`): quando uma clínica **abordada** escreve, espera de
+  `--espera-min` a `--espera-max` segundos (padrão 60–180; cada nova bolha
+  adia, porque a clínica costuma mandar várias seguidas) e faz o mesmo que o
+  acompanhamento, só para aquele número: apresentação/resumo, identificação
+  para robô que pede nome, opção de menu, despedida e aviso no seu WhatsApp.
+  Conversas pessoais e clínicas não abordadas são ignoradas. Fora do dia útil
+  e da janela de horário, só acumula; trata ao reabrir. Se o envio diário
+  estiver rodando, tenta de novo em 2 min.
+- A ponte escuta **só em 127.0.0.1** e grava as mensagens em
+  `ponte_whatsapp/dados/mensagens.jsonl` (fora do git). Não marca mensagens
+  como lidas e não aparece "online" o dia todo.
+- Só vê o que chegou **depois** de conectada. O que enviamos antes pelo
+  Chrome vem do histórico de envios, para o classificador continuar
+  funcionando nas conversas antigas.
+- Risco de bloqueio: o mesmo do Chrome (as duas formas são não oficiais).
+  Limites diários, intervalos e a espera antes de responder continuam valendo.
+
+### O que o bot faz com cada resposta
+
+Regras tiradas das 52 respostas reais das clínicas (10 a 18/11/2026):
+
+| A clínica... | O bot |
+|---|---|
+| Respondeu em até 30 s, ou com frase de robô ("em alguns instantes um atendente", "Você foi transferido", "Como avalia o nosso atendimento?") | Trata como **robô**. No primeiro contato, escolhe "falar com atendente" se o menu tiver; senão manda a **identificação** ("Não sou paciente… procuro a gestão"). Uma vez por clínica |
+| Uma pessoa respondeu | Manda a 2ª etapa (apresentação ou resumo) e avisa você |
+| Pediu para enviar **por e-mail** | Confirma no WhatsApp, deixa a proposta como **rascunho no seu Gmail** (com a demonstração personalizada) e avisa você. Sem senha de app, o texto pronto vai no aviso |
+| Repassou o **cartão de contato da gestão** | Agradece, cadastra o gestor (`indicado_por`) e manda a apresentação a ele citando a clínica |
+| Já conversou e **voltou a escrever** | Avisa você na hora ("🔥 voltou a escrever"), salvo cortesia ("Disponha!", "Tenha uma ótima semana") |
+| Não tem interesse | Despedida (uma vez) e sai da fila |
+
+**Conversa assumida**: se você respondeu à mão (pelo celular) depois do
+último envio do bot, ele não manda mais nada automático naquela conversa;
+só classifica e avisa.
+
+### Avisos por e-mail e rascunhos no Gmail
+
+No `config.local.json`:
+
+```json
+{ "email_usuario": "seu@gmail.com", "email_senha_app": "abcd efgh ijkl mnop" }
+```
+
+A senha de app é gerada em myaccount.google.com/apppasswords (exige
+verificação em duas etapas) e **não é a senha da conta**. Com ela:
+- todo alerta (ponte caída, envio do dia que não rodou, clínica respondeu)
+  chega também por e-mail, que não depende do WhatsApp;
+- pedidos de proposta por e-mail viram rascunhos no Gmail. **Nada é enviado
+  sem você clicar em Enviar.**
+
+### Privacidade e backup
+
+- A ponte guarda só as conversas dos números do banco (o vigia grava a
+  lista em `ponte_whatsapp/dados/numeros_monitorados.json`); conversas
+  pessoais são descartadas e apagadas do disco.
+- Uma cópia do `prospeccao.db` por dia em `backups/` (as 30 mais novas),
+  feita pelo vigia e antes do envio diário.
+- O envio diário confere a ponte antes de começar; se ela estiver fora,
+  não envia nada e avisa por e-mail/notificação.
 
 ## Modo automático (agendado)
 
@@ -276,8 +370,14 @@ Agendado como **"Prospeccao Acompanhamento"** às 12h, 14h, 16h e 18h (dias
 | Tarefa | Quando |
 |---|---|
 | "Prospeccao WhatsApp" | Seg–sex, 9h (+0 a 40 min) |
-| "Prospeccao Acompanhamento" | Seg–sex, 12h, 14h, 16h, 18h |
+| "Prospeccao Ponte" | Ao fazer login; fica rodando (log em `ponte_whatsapp/ponte.log`) |
+| "Prospeccao Vigia" | Ao fazer login (+1 min); fica rodando, responde em 1–3 min |
+| "Prospeccao Acompanhamento" | **Desativada** desde 18/11/2026 (o vigia substitui) |
 | "Prospeccao Minerador" | Segundas, 7h30 |
+
+Com `"motor": "api"` no `config.local.json`, o envio das 9h também sai pela
+ponte. Para voltar ao Chrome: troque para `"web"`, desative a Ponte e o Vigia
+e reative o Acompanhamento (`Enable-ScheduledTask -TaskName "Prospeccao Acompanhamento"`).
 
 Se o PC estiver desligado no horário, o envio roda quando ligar (dentro da
 janela 8h–19h). O PC precisa estar ligado e com o usuário logado; o login do

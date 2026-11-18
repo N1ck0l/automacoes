@@ -560,7 +560,7 @@ def avancar_rodizio(indice: int, estado: Path = ARQUIVO_RODIZIO) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Minera empresas no Google Maps e integra ao prospeccao.csv "
+        description="Minera empresas no Google Maps e integra ao prospeccao.db "
                     "(deduplicado por telefone)."
     )
     parser.add_argument("--termo", default="clinica odontologica em Aracaju SE",
@@ -569,8 +569,8 @@ def main() -> None:
                         help="Máximo de estabelecimentos a coletar (padrão: 40)")
     parser.add_argument("--cidade", default=CIDADE_PADRAO,
                         help=f"Cidade dos resultados (padrão: {CIDADE_PADRAO})")
-    parser.add_argument("--saida", default=str(BASE_DIR / "prospeccao.csv"),
-                        help="CSV de saída/integração (padrão: prospeccao.csv)")
+    parser.add_argument("--saida", default=str(pw.ARQUIVO_BANCO),
+                        help="Banco .db ou CSV de saída/integração (padrão: prospeccao.db)")
     parser.add_argument("--delay-min", type=float, default=DELAY_MIN,
                         help="Pausa mínima entre navegações em segundos (padrão: 1)")
     parser.add_argument("--delay-max", type=float, default=DELAY_MAX,
@@ -623,11 +623,13 @@ def main() -> None:
     try:
         # Mesma trava do envio: nunca grava o CSV enquanto um envio o usa.
         with pw.TravaEnvio():
+            if caminho == pw.ARQUIVO_BANCO:
+                pw.garantir_banco()
             inseridos, pulados = integrar_csv(registros, caminho)
     except pw.EnvioEmAndamento as exc:
         print(f"[BLOQUEADO] {exc} Rode o minerador de novo depois.")
         sys.exit(1)
-    print(f"\n[CSV] {inseridos} novo(s) salvo(s) em {caminho.name}; "
+    print(f"\n[SALVO] {inseridos} novo(s) salvo(s) em {caminho.name}; "
           f"{pulados} duplicado(s) já existente(s) ignorado(s) "
           "(chave: telefone).")
     print(f"[CSV] Colunas: {', '.join(pw.COLUNAS)}")

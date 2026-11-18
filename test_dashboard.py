@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import testes_seguros  # noqa: F401  (blindagem: ver testes_seguros.py)
 import prospeccao_whatsapp as pw
 from prospeccao.config import carregar_config
 from prospeccao.metricas import (
@@ -210,11 +211,13 @@ class TestMelhoriasNucleo(unittest.TestCase):
             pw.resposta_para_robo(["Ola! Qual o seu nome para iniciarmos?"]),
             "Nickolas",
         )
-        # Saudação ("como posso ajudar?") não é menu: nada é enviado.
-        self.assertIsNone(pw.resposta_para_robo(["Como posso ajudar voce hoje?"]))
-        self.assertIsNone(pw.resposta_para_robo(
+        # Saudação automática ("como posso ajudar?") recebe a identificação
+        # (o vigia troca "Nickolas" pelo texto completo de identificacoes_robo).
+        self.assertEqual(pw.resposta_para_robo(["Como posso ajudar voce hoje?"]), "Nickolas")
+        self.assertEqual(pw.resposta_para_robo(
             ["Olá, espero que esteja bem\nMe chamo Gabi, sou a secretária de Dr. Matheus "
-             "Borges. Como posso te ajudar?"]))
+             "Borges. Como posso te ajudar?"]), "Nickolas")
+        self.assertIsNone(pw.resposta_para_robo([]))
         # Negativa e opt-out sem acento
         self.assertTrue(pw.resposta_negativa(["Agora nao, ja contratamos outra empresa"]))
         bolhas = [

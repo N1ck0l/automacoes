@@ -27,7 +27,9 @@ def carregar_config(base_dir: Path = BASE_DIR) -> dict:
         caminho = base_dir / nome
         if caminho.is_file():
             try:
-                dados = json.loads(caminho.read_text(encoding="utf-8"))
+                # utf-8-sig: aceita o BOM que o PowerShell 5 grava (com "utf-8"
+                # o json falhava e o arquivo era ignorado em silêncio).
+                dados = json.loads(caminho.read_text(encoding="utf-8-sig"))
                 if isinstance(dados, dict):
                     cfg.update(dados)
             except (OSError, ValueError):

@@ -1,0 +1,17 @@
+{
+  "name": "ponte-whatsapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ponte local (127.0.0.1) entre o script de prospecção e o WhatsApp, via Baileys",
+  "type": "module",
+  "main": "ponte.js",
+  "scripts": {
+    "start": "node ponte.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "pino": "^10.4.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

@@ -16,7 +16,7 @@ from prospeccao.metricas import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-CSV_PATH = BASE_DIR / "prospeccao.csv"
+CSV_PATH = BASE_DIR / "prospeccao.db"  # banco SQLite (um .csv também é aceito)
 
 st.set_page_config(
     page_title="Dashboard de Prospecção",
@@ -28,14 +28,25 @@ st.set_page_config(
 
 @st.cache_data(show_spinner=False)
 def carregar_dados(caminho: str, mtime: float) -> pd.DataFrame:
-    df = pd.read_csv(caminho, dtype=str, keep_default_na=False)
+    if Path(caminho).suffix.lower() == ".db":
+        import sqlite3
+        con = sqlite3.connect(f"file:{caminho}?mode=ro", uri=True)
+        try:
+            df = pd.read_sql_query("SELECT * FROM contatos ORDER BY id", con, dtype=str)
+        finally:
+            con.close()
+        df = df.drop(columns=["id", "extras"], errors="ignore").fillna("")
+    else:
+        df = pd.read_csv(caminho, dtype=str, keep_default_na=False)
     return preparar_dataframe(df)
 
 
 def mtime_csv(caminho: str) -> float:
     # Sem cache de propósito: o mtime é a chave que invalida carregar_dados
-    # quando o script grava o CSV.
-    return Path(caminho).stat().st_mtime
+    # quando o script grava. No SQLite em modo WAL a gravação vai primeiro
+    # para o arquivo -wal, então ele também conta.
+    wal = Path(caminho + "-wal")
+    return max(Path(caminho).stat().st_mtime, wal.stat().st_mtime if wal.exists() else 0)
 
 
 def kpi(coluna, rotulo: str, valor, ajuda: str | None = None) -> None:
@@ -44,14 +55,14 @@ def kpi(coluna, rotulo: str, valor, ajuda: str | None = None) -> None:
 
 def main() -> None:
     if not CSV_PATH.exists():
-        st.error("prospeccao.csv não encontrado.")
+        st.error("prospeccao.db não encontrado (rode o prospeccao_whatsapp.py uma vez para migrar o CSV).")
         return
 
     df = carregar_dados(str(CSV_PATH), mtime_csv(str(CSV_PATH)))
 
     st.title("📊 Dashboard de Prospecção — Clínicas")
     st.caption(
-        f"Fonte: `prospeccao.csv` • atualizado em "
+        f"Fonte: `{CSV_PATH.name}` • atualizado em "
         f"{datetime.fromtimestamp(mtime_csv(str(CSV_PATH))):%d/%m/%Y %H:%M} • "
         f"{len(df)} registros"
     )

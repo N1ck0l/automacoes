@@ -16,6 +16,7 @@ def _norm(texto: str) -> str:
 
 FRASES_BOT = (
     "seja bem-vindo", "seja bem vindo", "bem-vindo a", "bem vindo a",
+    "seja muito bem-vindo", "seja muito bem vindo", "bem-vindo(a)", "bem vindo(a)",
     "agradece seu contato", "agradece o seu contato",
     "obrigado pelo contato", "obrigada pelo contato", "estamos ausentes",
     "escolha uma das opcoes", "escolha uma opcao", "selecione uma opcao",
@@ -26,7 +27,52 @@ FRASES_BOT = (
     "menu de opcoes", "para agilizar seu atendimento", "aguarde um momento",
     "ja vamos te atender", "em instantes", "assim que possivel", "em breve",
     "numero de protocolo", "protocolo de atendimento",
+    # Vistos nas respostas reais (10 a 18/11/2026):
+    "em alguns instantes", "um atendente ira", "uma de nossas atendentes",
+    "voce foi transferido", "sera atendido", "entraremos em contato",
+    "estamos indisponiveis", "agradece seu contato", "agradece o contato",
+    "como avalia o nosso atendimento", "sua opiniao e importante",
+    "conversa sera encerrada", "faz um tempinho que nao recebemos",
+    "por aqui posso ajudar", "por aqui consigo ajudar", "encaminhei sua solicitacao",
+    "responda apenas com o numero", "aviso sobre a lgpd",
 )
+
+# Cortesia de encerramento ("Disponha!", "Tenha uma excelente semana!"): é
+# gente, mas não pede nada. Não vira aviso de lead quente.
+_RE_CORTESIA = re.compile(
+    r"^\W*(?:(?:bom\s+dia|boa\s+tarde|boa\s+noite|ola|oi)\W*)?"
+    r"(?:disponha|de\s+nada|por\s+nada|obrigad[oa]s?|muito\s+obrigad[oa]|agradeco|"
+    r"agradecemos|ok|okay|certo|combinado|amem|tmj|valeu|"
+    r"(?:tenha|tenham)\s+(?:um|uma)\s+(?:otim[oa]|excelente|boa|bom)\s+\w+)"
+    r"(?:[\s,.!]+(?:nickolas|tambem|igualmente|pra\s+voce|para\s+voce|"
+    r"(?:tenha|tenham)\s+(?:um|uma)\s+(?:otim[oa]|excelente|boa|bom)\s+\w+))*\W*$")
+
+_RE_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def eh_cortesia(texto: str) -> bool:
+    return bool(_RE_CORTESIA.match(_norm(texto)))
+
+
+def extrair_email(textos: list[str]) -> str | None:
+    """Primeiro e-mail citado nas mensagens (ex.: "Pode enviar para o email X")."""
+    for texto in textos:
+        m = _RE_EMAIL.search(texto or "")
+        if m:
+            return m.group(0).rstrip(".").lower()
+    return None
+
+
+def extrair_contato_compartilhado(textos: list[str]) -> tuple[str, str] | None:
+    """(nome, telefone) de um cartão de contato repassado pela clínica.
+
+    A ponte transforma o cartão em "[contato] Nome +5579..." (ver ponte.js).
+    """
+    for texto in textos:
+        m = re.search(r"\[contato\]\s*(.*?)\s*\+?(\d{10,13})\b", texto or "")
+        if m:
+            return m.group(1).strip(" :-") or "Contato", m.group(2)
+    return None
 
 PADROES_OPTOUT = (
     r"\bn[aã]o\s+(?:tenho|temos|ha)\s+interesse", r"\bsem\s+interesse\b",
@@ -62,10 +108,18 @@ _RE_MENU_SECUNDARIO = re.compile(
     r"assuntos?\s+administrativos?|administrativo|financeiro|gestao|parcerias?|fornecedores?)\b"
 )
 
+# Robô pedindo identificação: nome e/ou motivo do contato. Ex. (consultório
+# odontológico, 18/11/2026): "Para agilizar seu atendimento, por favor informe:
+# 👉 Nome e sobrenome ... 👉 Motivo do contato".
 _PADROES_PEDE_NOME = (
-    r"\bqual\s+(?:o\s+)?seu\s+nome\b",
+    r"\bqual\s+(?:e\s+)?(?:o\s+)?seu\s+nome\b",
+    r"\bsaber\s+(?:o\s+)?seu\s+nome\b",
     r"\bcomo\s+posso\s+(?:te\s+|lhe\s+)?chamar\b",
     r"\b(?:informe|digite|envie)\s+(?:o\s+)?seu\s+nome\b",
+    r"\bnome\s+(?:e\s+sobrenome|completo)\b",
+    r"\bmotivo\s+d[oa]\s+(?:seu\s+)?(?:contato|atendimento|mensagem)\b",
+    r"\b(?:me\s+)?(?:conte|diga|informe|envie|mande)\s+(?:o\s+)?seu\s+nome\b",
+    r"\bseu\s+nome\s+completo\b",
 )
 
 
@@ -119,9 +173,17 @@ def classificar_resposta(bolhas: list[dict], enviadas: list[str],
         return "sem interesse"
 
     def automatica(b: dict) -> bool:
-        rapida = (b["quando"] - inicio).total_seconds() <= 120
+        # Medido nas respostas reais: robôs respondem em 2 a 5 s (um atendente
+        # de IA levou 25 s); pessoas, de 50 s em diante. Até 2 min, só texto
+        # longo (boas-vindas com menu) ainda conta como robô.
+        # Conta do instante exato do envio (`desde`), não do início do minuto:
+        # com o minuto, um robô que respondeu em 5 s parecia ter levado 35 s.
+        segundos = max(0.0, (b["quando"] - desde).total_seconds())
+        # Bolhas do WhatsApp Web só têm minuto: dá a folga de um minuto.
+        limite = 90 if b["quando"].second == 0 and b["quando"].microsecond == 0 else 30
         norm = _norm(b["texto"])
-        return rapida or any(f in norm for f in FRASES_BOT)
+        return (segundos <= limite or any(f in norm for f in FRASES_BOT)
+                or (segundos <= 120 and len(norm) > 300))
 
     return "respondeu" if any(not automatica(b) for b in recebidas) else "resposta automatica"
 
@@ -150,19 +212,29 @@ def opcao_atendente(textos: list[str]) -> str | None:
 
 
 def resposta_para_robo(textos: list[str], nome_remetente: str = "Nickolas") -> str | None:
-    """Decide o que responder a outro robô: opção de menu ou nome.
+    """Decide o que responder a outro robô: o dígito da opção "falar com
+    atendente" do menu, ou `nome_remetente`, que quem chama troca por uma
+    identificação completa (montar_identificacao: quem sou, que não sou
+    paciente e que procuro a gestão).
 
-    "Como posso ajudar?" NÃO recebe resposta automática: é a saudação padrão
-    de secretárias e contas comerciais, não um menu. Responder "Assunto
-    administrativo…" ali saía solto na conversa (MB Odontologia, 16/11/2026).
+    Nas respostas reais, quase nenhum robô tem opção de atendente: pedem
+    nome, oferecem consulta ("Como posso te ajudar?", "Deseja agendar?") ou
+    avisam que vão retornar. Em todos esses casos a identificação serve, e a
+    pessoa que assumir a conversa já entende o assunto. (O antigo "Assunto
+    administrativo…" é que saía solto; a identificação explica.)
     """
     digito = opcao_atendente(textos)
     if digito:
         return digito
-    junto = " ".join(_norm(t) for t in textos)
-    if any(re.search(p, junto) for p in _PADROES_PEDE_NOME):
+    if any((t or "").strip() for t in textos):
         return nome_remetente
     return None
+
+
+def pede_nome(textos: list[str]) -> bool:
+    """O robô pediu nome/motivo do contato (para os testes e o log)."""
+    junto = " ".join(_norm(t) for t in textos)
+    return any(re.search(p, junto) for p in _PADROES_PEDE_NOME)
 
 
 def mensagens_recebidas(bolhas: list[dict], enviadas: list[str],

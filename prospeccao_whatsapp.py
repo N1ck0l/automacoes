@@ -11,7 +11,7 @@ PRINCÍPIOS ANTI-BAN (Meta):
   4. Janela de horário comercial e bloqueio de fim de semana.
   5. Spintax + personalização por clínica/bairro => nenhuma mensagem idêntica.
   6. Opt-out: quem pediu para não ser contatado (`nao_contatar`) nunca volta à fila.
-  7. Todo envio é registrado em `historico_envios.jsonl` para auditoria.
+  7. Todo envio é registrado no histórico (prospeccao.db) para auditoria.
 
 MODOS DE ENVIO (--modo):
   manual (padrão) : abre https://web.whatsapp.com/send?phone=...&text=... no
@@ -37,6 +37,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
 import re
 import sys
@@ -48,6 +49,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
+from prospeccao import banco
 from prospeccao.calendario import (  # noqa: F401
     FERIADOS_FIXOS,
     _pascoa,
@@ -61,16 +63,27 @@ from prospeccao.classificador import (  # noqa: F401
     PADROES_NEGATIVA,
     PADROES_OPTOUT,
     classificar_resposta,
+    eh_cortesia,
+    extrair_contato_compartilhado,
+    extrair_email,
     interpretar_bolha,
     mensagens_recebidas,
     opcao_atendente,
+    pede_nome,
     resposta_negativa,
     resposta_para_robo,
     resultado_entrega,
     texto_confere,
 )
 from prospeccao.config import carregar_config
-from prospeccao.notificacoes import notificar_telegram
+from prospeccao.notificacoes import (
+    criar_rascunho_gmail,
+    email_configurado,
+    enviar_email,
+    enviar_email_alerta,
+    notificar_telegram,
+)
+from prospeccao.ponte import ClientePonte, ErroPonte, PonteIndisponivel
 from prospeccao.telefones import (  # noqa: F401
     _escore_sinais,
     _sem_acentos,
@@ -91,8 +104,14 @@ from prospeccao.trava import (  # noqa: F401
 # ---------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
-ARQUIVO_CSV = BASE_DIR / "prospeccao.csv"
-ARQUIVO_LOG = BASE_DIR / "historico_envios.jsonl"
+# Contatos e histórico ficam no SQLite (prospeccao/banco.py). Um caminho .csv
+# (contatos) ou .jsonl (histórico) passado explicitamente ainda funciona.
+ARQUIVO_BANCO = BASE_DIR / "prospeccao.db"
+ARQUIVO_CSV = ARQUIVO_BANCO          # nome mantido: é "o arquivo de contatos"
+ARQUIVO_LOG = ARQUIVO_BANCO          # histórico de envios (tabela historico)
+CSV_LEGADO = BASE_DIR / "prospeccao.csv"
+JSONL_LEGADO = BASE_DIR / "historico_envios.jsonl"
+PASTA_BACKUP_LEGADO = BASE_DIR / "backup_pre_sqlite"
 ARQUIVO_MENSAGENS = BASE_DIR / "mensagens.json"
 PERFIL_SELENIUM = BASE_DIR / ".perfil_whatsapp_web"
 
@@ -113,7 +132,8 @@ def opcoes_janela(visivel: bool) -> list[str]:
 COLUNAS = ["clinica", "bairro", "cidade", "telefone", "site", "avaliacoes",
            "segmento", "status", "resposta", "atualizado_em", "ultimo_envio",
            "followups", "variante", "etapa", "menu", "versao_textos",
-           "estagio", "horarios"]
+           "estagio", "horarios", "email", "indicado_por", "email_enviado",
+           "alerta_sla"]
 # segmento: "odonto" | "medico" — inferido na mineração (nome/termo de busca);
 #        filtro --segmento no envio; vazio = não classificado
 # variante: teste A/B ("curta" | "completa")
@@ -124,6 +144,11 @@ COLUNAS = ["clinica", "bairro", "cidade", "telefone", "site", "avaliacoes",
 # versao_textos: "versao" do mensagens.json usada no 1º envio (o A/B compara
 #        só contatos da versão atual; vazio = textos antigos)
 # menu: "respondido" quando o script já escolheu "falar com atendente" no robô
+# email: e-mail que a clínica pediu para receber a proposta (etapa "email")
+# email_enviado: "pendente" (envio automático aguardando a senha de app) ou a
+#        data/hora em que a proposta saiu por e-mail
+# alerta_sla: último alerta de "cliente esperando resposta" ("<hora da mensagem>|<nível>")
+# indicado_por: clínica que indicou este contato (gestor repassado num cartão de contato)
 # estagio: funil comercial pós-resposta ("reuniao_agendada" | "proposta_enviada"
 #        | "fechado" | "perdido")
 
@@ -187,68 +212,150 @@ def _data(valor) -> datetime | None:
 
 @dataclass
 class Planilha:
-    """CSV de prospecção em memória.
+    """Contatos de prospecção em memória (banco SQLite ou CSV).
 
-    `linhas` guarda TODAS as linhas do arquivo (inclusive inválidas e
-    duplicadas), para que salvar nunca apague dados. `contatos` é o subconjunto
-    válido que entra nas filas — são os mesmos objetos, então alterar um
-    contato altera a linha que será gravada.
+    `linhas` guarda TODAS as linhas (inclusive inválidas e duplicadas), para
+    que salvar nunca apague dados. `contatos` é o subconjunto válido que entra
+    nas filas — são os mesmos objetos, então alterar um contato altera a linha
+    que será gravada.
+
+    No banco, salvar grava só o que mudou desde o carregamento (campo a campo):
+    outro processo pode ter alterado outros contatos nesse meio-tempo.
     """
     caminho: Path
     linhas: list[dict] = field(default_factory=list)
     contatos: list[dict] = field(default_factory=list)
     colunas: list[str] = field(default_factory=lambda: list(COLUNAS))
+    # id(linha) -> (id no banco, cópia da linha como foi carregada/salva)
+    _origem: dict = field(default_factory=dict, repr=False, compare=False)
 
     def adicionar(self, registro: dict) -> None:
         self.linhas.append(registro)
         self.contatos.append(registro)
 
+    def recarregar(self) -> None:
+        """Relê do disco (outro processo pode ter gravado), no mesmo objeto."""
+        nova = carregar_planilha(self.caminho)
+        self.linhas, self.contatos, self.colunas = nova.linhas, nova.contatos, nova.colunas
+        self._origem = nova._origem
+
     def salvar(self) -> None:
-        salvar_contatos(self.caminho, self.linhas, self.colunas)
+        if not banco.eh_banco(self.caminho):
+            salvar_contatos(self.caminho, self.linhas, self.colunas)
+            return
+        itens, alvos = [], []
+        for linha in self.linhas:
+            id_banco, original = self._origem.get(id(linha), (None, None))
+            if id_banco is not None and original == linha:
+                continue  # nada mudou nesta linha
+            itens.append((id_banco, linha, original))
+            alvos.append(linha)
+        if not itens:
+            return
+        ids = banco.salvar_alteracoes(self.caminho, self.colunas, itens)
+        for linha, id_banco in zip(alvos, ids):
+            self._origem[id(linha)] = (id_banco, dict(linha))
+
+
+def _validar_linhas(planilha: Planilha, linhas: list[tuple[str, dict]]) -> None:
+    """Separa os contatos válidos (fila) das linhas guardadas só para preservar."""
+    vistos: set[str] = set()
+    for rotulo, registro in linhas:
+        bruto = registro["telefone"]
+        telefone = normalizar_telefone(bruto)
+        if not bruto:
+            motivo = "telefone vazio"
+        elif not validar_telefone(telefone):
+            motivo = f"telefone inválido ('{telefone}')"
+        elif telefone in vistos:
+            motivo = f"telefone duplicado ({telefone}) — anti reenvio"
+        else:
+            motivo = ""
+        if motivo:
+            print(f"[AVISO] {rotulo}: {motivo} — fora da fila (mantida no arquivo).")
+            continue
+
+        vistos.add(telefone)
+        registro["telefone"] = telefone
+        registro["status"] = registro["status"].lower() or PENDENTE
+        registro["resposta"] = registro["resposta"].lower()
+        registro["segmento"] = registro["segmento"].lower()
+        registro["cidade"] = registro["cidade"] or CIDADE_PADRAO
+        planilha.contatos.append(registro)
 
 
 def carregar_planilha(caminho: Path) -> Planilha:
-    """Carrega o CSV. Linhas com telefone vazio, inválido ou duplicado ficam
-    fora da fila (com aviso), mas continuam no arquivo."""
+    """Carrega os contatos (banco .db ou CSV). Linhas com telefone vazio,
+    inválido ou duplicado ficam fora da fila (com aviso), mas são mantidas."""
     caminho = Path(caminho)
     planilha = Planilha(caminho)
     if not caminho.exists():
         print(f"[AVISO] '{caminho.name}' não encontrado.")
         return planilha
 
-    vistos: set[str] = set()
+    if banco.eh_banco(caminho):
+        registros, extras = banco.carregar_contatos(caminho, COLUNAS)
+        planilha.colunas = COLUNAS + extras
+        rotulos = []
+        for id_banco, registro in registros:
+            registro = {c: (registro.get(c) or "").strip() for c in planilha.colunas}
+            # A cópia é tirada ANTES da normalização: o que ela corrigir
+            # (telefone, minúsculas) é gravado no próximo salvar.
+            planilha._origem[id(registro)] = (id_banco, dict(registro))
+            planilha.linhas.append(registro)
+            rotulos.append((f"Contato id {id_banco}", registro))
+        _validar_linhas(planilha, rotulos)
+        return planilha
+
     with caminho.open(newline="", encoding="utf-8-sig") as f:
         leitor = csv.DictReader(f)
         extras = [c for c in (leitor.fieldnames or []) if c and c not in COLUNAS]
         planilha.colunas = COLUNAS + extras  # colunas extras do usuário são preservadas
-
+        rotulos = []
         for i, linha in enumerate(leitor, start=2):
             registro = {c: (linha.get(c) or "").strip() for c in planilha.colunas}
             planilha.linhas.append(registro)
-
-            bruto = registro["telefone"]
-            telefone = normalizar_telefone(bruto)
-            if not bruto:
-                motivo = "telefone vazio"
-            elif not validar_telefone(telefone):
-                motivo = f"telefone inválido ('{telefone}')"
-            elif telefone in vistos:
-                motivo = f"telefone duplicado ({telefone}) — anti reenvio"
-            else:
-                motivo = ""
-            if motivo:
-                print(f"[AVISO] Linha {i}: {motivo} — fora da fila (mantida no CSV).")
-                continue
-
-            vistos.add(telefone)
-            registro["telefone"] = telefone
-            registro["status"] = registro["status"].lower() or PENDENTE
-            registro["resposta"] = registro["resposta"].lower()
-            registro["segmento"] = registro["segmento"].lower()
-            registro["cidade"] = registro["cidade"] or CIDADE_PADRAO
-            planilha.contatos.append(registro)
-
+            rotulos.append((f"Linha {i}", registro))
+    _validar_linhas(planilha, rotulos)
     return planilha
+
+
+def ler_csv_legado(caminho: Path) -> list[dict]:
+    """Todas as linhas de um CSV antigo, sem validar (para a migração)."""
+    with Path(caminho).open(newline="", encoding="utf-8-sig") as f:
+        leitor = csv.DictReader(f)
+        return [{k: (v or "").strip() for k, v in linha.items() if k} for linha in leitor]
+
+
+def garantir_banco(silencioso: bool = False) -> None:
+    """Migração única: se o banco ainda não existe (ou está vazio) e há o
+    CSV/JSONL antigos, copia tudo para o SQLite e guarda os originais em
+    backup_pre_sqlite/. Idempotente."""
+    if not banco.vazio(ARQUIVO_BANCO, COLUNAS):
+        return
+    if not CSV_LEGADO.exists() and not JSONL_LEGADO.exists():
+        return
+    linhas = ler_csv_legado(CSV_LEGADO) if CSV_LEGADO.exists() else []
+    registros = []
+    if JSONL_LEGADO.exists():
+        for linha in JSONL_LEGADO.read_text(encoding="utf-8").splitlines():
+            try:
+                registros.append(json.loads(linha))
+            except json.JSONDecodeError:
+                continue
+    n_cont, n_env = banco.migrar(linhas, registros, ARQUIVO_BANCO, COLUNAS)
+    PASTA_BACKUP_LEGADO.mkdir(exist_ok=True)
+    for arquivo in (CSV_LEGADO, JSONL_LEGADO):
+        if arquivo.exists():
+            arquivo.replace(PASTA_BACKUP_LEGADO / arquivo.name)
+    if not silencioso:
+        print(f"[MIGRAÇÃO] {n_cont} contato(s) e {n_env} envio(s) copiados para "
+              f"{ARQUIVO_BANCO.name}; originais em {PASTA_BACKUP_LEGADO.name}/.")
+
+
+def exportar_csv(planilha: Planilha, destino: Path) -> None:
+    """Cópia dos contatos em CSV (para abrir no Excel); o banco continua sendo a fonte."""
+    salvar_contatos(destino, planilha.linhas, planilha.colunas)
 
 
 def carregar_contatos(caminho: Path) -> list[dict]:
@@ -275,7 +382,9 @@ def salvar_contatos(caminho: Path, contatos: list[dict],
 
 CHAVES_MENSAGENS = ["saudacoes", "ganchos", "autoridades", "cases", "ctas",
                     "estruturas", "followups", "aberturas", "estruturas_apresentacao",
-                    "ctas_apresentacao", "estruturas_resumo", "despedidas"]
+                    "ctas_apresentacao", "estruturas_resumo", "despedidas",
+                    "identificacoes_robo", "confirmacoes_email", "agradecimentos_indicacao",
+                    "aberturas_indicado", "email_proposta"]
 _CACHE_MENSAGENS: dict[Path, dict] = {}
 
 
@@ -518,6 +627,90 @@ def montar_despedida(contato: dict, mensagens: dict | None = None,
     return resolver_spintax(random.choice(m["despedidas"]), _contexto(contato, m, agora))
 
 
+def montar_identificacao(contato: dict, mensagens: dict | None = None,
+                         agora: datetime | None = None) -> str:
+    """Resposta ao robô que pede nome/motivo: quem sou, que não sou paciente
+    e que procuro o responsável pela gestão."""
+    m = mensagens or carregar_mensagens()
+    return resolver_spintax(random.choice(m["identificacoes_robo"]),
+                            _contexto(contato, m, agora))
+
+
+_NOMES_DE_SETOR = {"gestao", "gerencia", "gerente", "financeiro", "administrativo",
+                   "administracao", "contato", "recepcao", "clinica", "comercial",
+                   "diretoria", "coordenacao", "atendimento", "setor"}
+
+
+def primeiro_nome(nome: str) -> str:
+    """Como chamar o contato indicado: "Joana Gestão" -> "Joana"; "Dra. Joana Lima" ->
+    "Dra. Joana"; "Gestão Exemplo" -> "" (nome de setor, não de pessoa)."""
+    partes = [p for p in re.split(r"\s+", (nome or "").strip()) if p]
+    if not partes:
+        return ""
+    if _sem_acentos(partes[0].lower()).rstrip(".") in ("dr", "dra") and len(partes) > 1:
+        return f"{partes[0].rstrip('.').capitalize()}. {partes[1]}"
+    if _sem_acentos(partes[0].lower()) in _NOMES_DE_SETOR or not partes[0].isalpha():
+        return ""
+    return partes[0].capitalize()
+
+
+def formatar_telefone(numero: str) -> str:
+    """5579981677954 -> (79) 98167-7954."""
+    n = re.sub(r"\D", "", numero or "")
+    if n.startswith("55"):
+        n = n[2:]
+    if len(n) == 11:
+        return f"({n[:2]}) {n[2:7]}-{n[7:]}"
+    if len(n) == 10:
+        return f"({n[:2]}) {n[2:6]}-{n[6:]}"
+    return numero or ""
+
+
+def montar_confirmacao_email(contato: dict, mensagens: dict, email: str,
+                             agora: datetime | None = None) -> str:
+    """Resposta no WhatsApp a quem pediu a proposta por e-mail."""
+    contexto = _contexto(contato, mensagens, agora) | {"email": email}
+    return resolver_spintax(random.choice(mensagens["confirmacoes_email"]), contexto)
+
+
+def montar_email_proposta(contato: dict, mensagens: dict,
+                          meu_whatsapp: str = "") -> tuple[str, str]:
+    """(assunto, corpo) do e-mail de proposta, com o link da demonstração."""
+    modelo = mensagens["email_proposta"]
+    contexto = _contexto(contato, mensagens, None) | {
+        "link_demo": demonstracao_html(mensagens, contato) or "",
+        "meu_whatsapp": formatar_telefone(meu_whatsapp) if meu_whatsapp else "",
+    }
+    corpo = resolver_spintax(modelo["corpo"], contexto)
+    if not contexto["link_demo"]:
+        corpo = re.sub(r"\n\nPreparei uma demonstração[^\n]*\n\n?", "\n\n", corpo)
+    if not contexto["meu_whatsapp"]:
+        corpo = corpo.replace(" | WhatsApp: ", "")
+    return resolver_spintax(modelo["assunto"], contexto), corpo.strip()
+
+
+def montar_agradecimento_indicacao(contato: dict, mensagens: dict, indicado: str,
+                                   agora: datetime | None = None) -> str:
+    """Agradece à clínica que repassou o contato da gestão."""
+    nome = primeiro_nome(indicado)
+    contexto = _contexto(contato, mensagens, agora) | {
+        "indicado": nome or "a pessoa indicada"}
+    return resolver_spintax(random.choice(mensagens["agradecimentos_indicacao"]), contexto)
+
+
+def montar_abertura_indicado(gestor: dict, origem: dict, mensagens: dict,
+                             agora: datetime | None = None) -> str:
+    """Primeira mensagem ao gestor indicado pela clínica `origem`."""
+    nome = primeiro_nome(gestor.get("nome_indicado") or "")
+    contexto = _contexto(origem, mensagens, agora) | {
+        "ola_indicado": f"Olá, {nome}" if nome else "Olá",
+        "case": random.choice(mensagens["cases"]),
+        "cta_apresentacao": random.choice(mensagens["ctas_apresentacao"]),
+    }
+    texto = resolver_spintax(random.choice(mensagens["aberturas_indicado"]), contexto)
+    return _com_link_demonstracao(texto, mensagens, origem)
+
+
 def montar_texto_followup(contato: dict, mensagens: dict | None = None,
                            agora: datetime | None = None) -> str:
     """Mensagem curta de retomada para quem não respondeu.
@@ -607,6 +800,8 @@ _CACHE_HISTORICO: dict[Path, tuple[tuple[int, int], list[dict]]] = {}
 
 def ler_historico() -> list[dict]:
     caminho = Path(ARQUIVO_LOG)
+    if banco.eh_banco(caminho):
+        return banco.ler_historico(caminho, COLUNAS)
     if not caminho.exists():
         return []
     chave = caminho.resolve()
@@ -631,7 +826,8 @@ def ler_historico() -> list[dict]:
 # das 9h esgotaria a cota e a resposta a quem falou com a gente ficaria
 # adiada dia após dia. A 2ª etapa tem um teto próprio (segundas_etapas_hoje).
 SEGUNDAS_ETAPAS = {"apresentacao", "resumo"}
-TIPOS_FORA_DO_LIMITE = {"menu", "despedida"} | SEGUNDAS_ETAPAS
+TIPOS_FORA_DO_LIMITE = ({"menu", "identificacao", "despedida", "email", "indicacao", "gestor"}
+                        | SEGUNDAS_ETAPAS)
 
 
 def envios_hoje() -> int:
@@ -691,6 +887,9 @@ def atualizar_historico(contato: dict, mensagem: str, modo: str,
         "variante": variante or contato.get("variante", ""),
         "mensagem": mensagem,
     }
+    if banco.eh_banco(ARQUIVO_LOG):
+        banco.registrar_historico(ARQUIVO_LOG, COLUNAS, registro)
+        return
     with ARQUIVO_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(registro, ensure_ascii=False) + "\n")
     _CACHE_HISTORICO.pop(Path(ARQUIVO_LOG).resolve(), None)
@@ -1386,6 +1585,174 @@ class SessaoWeb:
             self._trava = None
 
 
+class SessaoAPI:
+    """Mesma interface da SessaoWeb, mas via ponte local (Baileys).
+
+    Sem navegador: o envio é uma chamada à ponte (ponte_whatsapp/ponte.js),
+    que já devolve a confirmação do servidor do WhatsApp. As mensagens
+    recebidas chegam à ponte em tempo real (ver rodar_vigia).
+    """
+
+    SEM_WHATSAPP = SessaoWeb.SEM_WHATSAPP
+    DESLOGADO = SessaoWeb.DESLOGADO
+    TEXTO_NAO_CONFERE = SessaoWeb.TEXTO_NAO_CONFERE
+    NAO_CONFIRMADO = SessaoWeb.NAO_CONFIRMADO
+    TECNICO = SessaoWeb.TECNICO
+    BLOQUEADO = SessaoWeb.BLOQUEADO
+    CANCELADO = SessaoWeb.CANCELADO
+
+    def __init__(self, cliente: ClientePonte | None = None) -> None:
+        self.cliente = cliente or ClientePonte()
+        self.ultimo_erro: str | None = None
+        self.erro_anexo: str | None = None
+        self.confirmado = False
+        self.ultimo_numero: str | None = None
+
+    def _conectada(self) -> str | None:
+        """None se a ponte está conectada; senão o código de erro."""
+        try:
+            st = self.cliente.status()
+        except PonteIndisponivel:
+            print("[ERRO] A ponte do WhatsApp não está rodando "
+                  "(inicie com: node ponte_whatsapp/ponte.js).")
+            return self.TECNICO
+        return None if st.get("conectado") else self.DESLOGADO
+
+    def healthcheck(self, segundos: int = 25) -> dict:
+        erro = self._conectada()
+        status = "conectado" if erro is None else (
+            "deslogado" if erro == self.DESLOGADO else "ponte parada")
+        return {"status": status, "seletores_ativos": {}}
+
+    def enviar(self, contato: dict, mensagem: str,
+               permitir_reenvio: bool = False, confirmar: bool = True) -> bool:
+        self.ultimo_erro = None
+        self.confirmado = False
+        tel = contato["telefone"]
+        if not permitir_reenvio and enviado_hoje(tel):
+            print(f"[BLOQUEADO] +{tel} já recebeu mensagem hoje — envio duplicado evitado.")
+            self.ultimo_erro = self.BLOQUEADO
+            return False
+        _cabecalho_alvo(contato)
+        print("=" * 64)
+        if confirmar:
+            print(mensagem)
+            print("=" * 64)
+            if input("ENVIAR AGORA pela ponte? Digite 'ENVIAR' (ou qualquer outra "
+                     "coisa para abortar): ").strip() != "ENVIAR":
+                print("[SKIP] Envio abortado pelo operador (nada foi enviado).")
+                self.ultimo_erro = self.CANCELADO
+                return False
+        erro = self._conectada()
+        if erro:
+            self.ultimo_erro = erro
+            return False
+        try:
+            if not self.cliente.verificar(tel).get("existe"):
+                print(f"[SEM WHATSAPP] +{tel} não está no WhatsApp.")
+                self.ultimo_erro = self.SEM_WHATSAPP
+                return False
+        except (PonteIndisponivel, ErroPonte) as exc:
+            print(f"[ERRO] Não consegui verificar o número: {exc}")
+            self.ultimo_erro = self.TECNICO
+            return False
+        # Última conferência: alguém pode ter enviado enquanto preparávamos.
+        if not permitir_reenvio and enviado_hoje(tel):
+            self.ultimo_erro = self.BLOQUEADO
+            return False
+        try:
+            resposta = self.cliente.enviar(tel, mensagem)
+        except ErroPonte as exc:
+            # A ponte recusou ANTES de enviar (número inválido, desconectada...)
+            # ou o sendMessage falhou: nada saiu.
+            self.ultimo_erro = {404: self.SEM_WHATSAPP, 503: self.DESLOGADO}.get(
+                exc.codigo, self.TECNICO)
+            print(f"[ERRO] A ponte não enviou: {exc.erro}")
+            return False
+        except PonteIndisponivel as exc:
+            # Sem resposta DEPOIS do pedido: a mensagem pode ter saído. Trata
+            # como enviada sem confirmação para nunca reenviar por engano.
+            print(f"[ALERTA] Sem resposta da ponte após o envio ({exc}) — "
+                  "verifique manualmente.")
+            self.ultimo_erro = self.NAO_CONFIRMADO
+            self.ultimo_numero = tel
+            return True
+        self.ultimo_numero = tel
+        self.confirmado = bool(resposta.get("ok"))
+        if self.confirmado:
+            print("[OK] Mensagem enviada (confirmada pela ponte).")
+        else:
+            self.ultimo_erro = self.NAO_CONFIRMADO
+        return True
+
+    def enviar_arquivo(self, caminho) -> bool:
+        """Anexa um arquivo na última conversa usada (melhor esforço)."""
+        self.erro_anexo = None
+        caminho = Path(caminho)
+        if not self.ultimo_numero:
+            self.erro_anexo = "nenhuma conversa aberta"
+            return False
+        if not caminho.is_file():
+            self.erro_anexo = f"arquivo não encontrado: {caminho.name}"
+            return False
+        try:
+            self.cliente.enviar_arquivo(self.ultimo_numero, str(caminho.resolve()))
+        except (PonteIndisponivel, ErroPonte) as exc:
+            self.erro_anexo = str(exc)
+            return False
+        print(f"[OK] {caminho.name} anexado na conversa.")
+        return True
+
+    def ler_conversa(self, numero: str, esperar_texto: str | None = None) -> list[dict] | str:
+        """Bolhas da conversa no formato de interpretar_bolha().
+
+        A ponte só conhece o que trafegou depois de conectada; as mensagens que
+        enviamos ANTES (pelo navegador) vêm do histórico de envios, para o
+        classificador saber o que é nosso e desde quando contar a resposta.
+        """
+        erro = self._conectada()
+        if erro:
+            return erro
+        try:
+            dados = self.cliente.conversa(numero)
+        except ErroPonte as exc:
+            return self.DESLOGADO if exc.codigo == 503 else self.TECNICO
+        except PonteIndisponivel:
+            return self.TECNICO
+        bolhas = [{"remetente": "eu" if m.get("de_mim") else (m.get("nome") or "clinica"),
+                   "quando": datetime.fromtimestamp(float(m["quando"])),
+                   "texto": m.get("texto") or ""}
+                  for m in dados.get("mensagens", []) if m.get("quando")]
+        for r in ler_historico():
+            if r.get("telefone") != numero or not r.get("mensagem"):
+                continue
+            if any(b["remetente"] == "eu" and texto_confere(b["texto"], r["mensagem"])
+                   for b in bolhas):
+                continue
+            quando = _data(r.get("timestamp", ""))
+            if quando:
+                bolhas.append({"remetente": "eu", "quando": quando, "texto": r["mensagem"]})
+        bolhas.sort(key=lambda b: b["quando"])
+        return bolhas
+
+    def fechar(self) -> None:
+        """Nada a fechar: a ponte continua rodando para os próximos usos."""
+
+
+def _motor_padrao() -> str:
+    return (os.environ.get("PROSPECCAO_MOTOR") or str(carregar_config().get("motor") or "")
+            or "web").strip().lower()
+
+
+# "web" (Selenium/WhatsApp Web) ou "api" (ponte Baileys). --motor sobrepõe.
+MOTOR = _motor_padrao()
+
+
+def nova_sessao():
+    """Sessão do motor configurado (SessaoAPI ou SessaoWeb)."""
+    return SessaoAPI() if MOTOR == "api" else SessaoWeb()
+
+
 # ---------------------------------------------------------------------------
 # 5. ORQUESTRAÇÃO — FLUXO SEMI-SUPERVISIONADO
 # ---------------------------------------------------------------------------
@@ -1639,7 +2006,9 @@ NOMES_GENERICOS = {
 
 LIMITES_TAMANHO = {"completa": (200, 1500), "curta": (80, 400),
                    "apresentacao": (150, 1300), "resumo": (150, 1300),
-                   "followup": (60, 500), "despedida": (60, 400)}
+                   "followup": (60, 500), "despedida": (60, 400),
+                   "identificacao": (80, 500), "email": (60, 400),
+                   "indicacao": (60, 400), "gestor": (150, 1400)}
 
 
 def validar_mensagem(mensagem: str, contato: dict, tipo: str = "completa") -> str | None:
@@ -1658,7 +2027,7 @@ def validar_mensagem(mensagem: str, contato: dict, tipo: str = "completa") -> st
     for proibido in TEXTOS_PROIBIDOS:
         if proibido in baixo:
             return f"texto proibido: '{proibido}'"
-    if tipo not in ("apresentacao", "resumo") and nome not in mensagem:
+    if tipo not in ("apresentacao", "resumo", "email", "gestor") and nome not in mensagem:
         return "nome da clínica ausente"
     if chave_clinica({"clinica": nome}) in NOMES_GENERICOS:
         return f"nome genérico, sem a marca da clínica: '{nome}' (corrija no CSV)"
@@ -1754,6 +2123,8 @@ def ler_conversa(sessao: "SessaoWeb", numero: str,
     essa mensagem aparecer antes de concluir que ela não está lá.
     Retorna a lista de bolhas, ou o código de erro (sem_whatsapp/deslogado/tecnico).
     """
+    if isinstance(sessao, SessaoAPI):
+        return sessao.ler_conversa(numero, esperar_texto)
     driver = sessao._garantir_driver()
     driver.get(f"https://web.whatsapp.com/send?phone={numero}")
     caixa, situacao = sessao._esperar_conversa(driver, segundos=45)
@@ -1806,6 +2177,8 @@ return pane.querySelectorAll('[aria-label*="não lida" i], [aria-label*="unread"
 
 def _contar_nao_lidas_visiveis(sessao: "SessaoWeb") -> int | None:
     """Conta badges de mensagens não lidas em #pane-side sem recarregar a página."""
+    if isinstance(sessao, SessaoAPI):
+        return None  # a ponte não tem contador de não lidas: confere tudo
     try:
         driver = sessao._garantir_driver()
         if not driver.find_elements(_By.CSS_SELECTOR, SessaoWeb.SELETORES["lista_chats"]):
@@ -1826,13 +2199,16 @@ def _contar_nao_lidas_visiveis(sessao: "SessaoWeb") -> int | None:
 def verificar_conversas(planilha: Planilha, sessao: "SessaoWeb",
                         max_conversas: int = 40,
                         ja_confirmados: set[str] | None = None,
-                        apenas_nao_lidas: bool = False) -> dict:
+                        apenas_nao_lidas: bool = False,
+                        somente: set[str] | None = None,
+                        incluir_respondidos: bool = False) -> dict:
     """Uma passada de leitura: confere as entregas de hoje e lê respostas.
 
     - Entregas: para cada número que recebeu hoje, a última mensagem enviada
       aparece exatamente 1 vez na conversa? (0 = não chegou, 2+ = duplicada)
     - Respostas: classifica e atualiza o CSV (respondeu / resposta automatica /
       sem interesse -> nao_contatar).
+    `somente` restringe a passada a esses telefones (modo vigia).
     """
     hoje = datetime.now().date()
     historico = mensagens_enviadas_por_numero(30)
@@ -1846,14 +2222,19 @@ def verificar_conversas(planilha: Planilha, sessao: "SessaoWeb",
                  if c["status"] == ENVIADO and c["telefone"] in historico
                  and ((c.get("resposta") or "") in RESPOSTAS_EM_ABERTO
                       # pessoa respondeu à abertura curta e a apresentação ainda não foi
-                      or (c.get("resposta") == "respondeu" and _segunda_etapa(c)))}
+                      or (c.get("resposta") == "respondeu" and _segunda_etapa(c))
+                      # vigia: quem já conversou e voltou a escrever (e-mail, indicação)
+                      or (incluir_respondidos and c.get("resposta") == "respondeu"))}
+    if somente is not None:
+        conferir &= somente
+        responder &= somente
     # "verificados": números cuja situação de resposta foi de fato conferida
     # nesta passada (conversa lida, ou nenhuma não lida no WhatsApp). Só esses
     # podem ser encerrados por falta de retorno (encerrar_sem_retorno).
     relatorio = {"conferidas": len(conferir_todos & confirmados),
                  "nao_verificaveis": 0, "problemas": [], "respostas": [],
                  "optouts": [], "automaticas": [], "erro": None,
-                 "acoes": [], "respostas_texto": [], "verificados": set()}
+                 "acoes": [], "respostas_texto": [], "verificados": set(), "avisos": []}
 
     if apenas_nao_lidas and responder:
         nao_lidas = _contar_nao_lidas_visiveis(sessao)
@@ -1904,19 +2285,43 @@ def verificar_conversas(planilha: Planilha, sessao: "SessaoWeb",
             primeiro = _data(historico[tel][0].get("timestamp", "")) or desde
             recebidas = mensagens_recebidas(bolhas, enviadas, primeiro)
             alterado = False
-            if resposta == "respondeu" and _segunda_etapa(contato):
-                ultimas = [b["texto"] for b in mensagens_recebidas(bolhas, enviadas, desde)]
+            ultimas = [b["texto"] for b in mensagens_recebidas(bolhas, enviadas, desde)]
+            # Você respondeu à mão (pelo celular) depois do último envio do bot:
+            # a conversa é sua, o bot só classifica e avisa (duas clínicas,
+            # 18/11: a identificação automática chegaria depois da sua resposta).
+            assumiu = operador_assumiu(bolhas, enviadas, desde)
+            email = extrair_email(ultimas) if resposta == "respondeu" else None
+            indicado = (extrair_contato_compartilhado(ultimas)
+                        if resposta == "respondeu" else None)
+            if assumiu:
+                pass
+            elif email and email != (contato.get("email") or "").lower():
+                # "Pode enviar para o e-mail X": confirma por aqui, deixa o
+                # e-mail pronto (rascunho no Gmail) e avisa o operador. Vale no
+                # lugar da 2ª etapa: a clínica pediu o canal.
+                relatorio["acoes"].append(("email", tel, email))
+            elif indicado and chave_numero(indicado[1]) not in {
+                    chave_numero(c["telefone"]) for c in planilha.contatos}:
+                # Cartão de contato da gestão: agradece e aborda o indicado.
+                relatorio["acoes"].append(("indicacao", tel, indicado))
+            elif resposta == "respondeu" and _segunda_etapa(contato):
                 if resposta_negativa(ultimas):
                     if contato.get("etapa") != "recusou":
                         contato["etapa"] = "recusou"  # não insiste; o operador decide
                         alterado = True
                 else:
                     relatorio["acoes"].append((_segunda_etapa(contato), tel, None))
-            if resposta != "respondeu" and resposta != "sem interesse" \
-                    and not contato.get("menu"):
-                resp_robo = resposta_para_robo([b["texto"] for b in recebidas])
-                if resp_robo:
+            # Robô: só no primeiro contato e só com o que chegou depois do último
+            # envio (antes, mensagens antigas de quem já conversou contavam).
+            if resposta == "resposta automatica" and not assumiu \
+                    and not contato.get("menu") and _primeira_etapa(contato):
+                resp_robo = resposta_para_robo(ultimas)
+                if resp_robo and resp_robo.isdigit():
                     relatorio["acoes"].append(("menu", tel, resp_robo))
+                elif resp_robo:
+                    # Pediu nome/motivo: só "Nickolas" deixava a recepção sem
+                    # saber o assunto (e abrindo um agendamento de paciente).
+                    relatorio["acoes"].append(("identificacao", tel, None))
             if resposta and resposta != contato.get("resposta"):
                 contato["resposta"] = resposta
                 contato["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
@@ -1925,7 +2330,7 @@ def verificar_conversas(planilha: Planilha, sessao: "SessaoWeb",
                 if resposta == "sem interesse":
                     contato["status"] = NAO_CONTATAR
                     relatorio["optouts"].append(nome)
-                    if contato.get("etapa") != "despedida":
+                    if contato.get("etapa") != "despedida" and not assumiu:
                         relatorio["acoes"].append(("despedida", tel, None))
                 elif resposta == "respondeu":
                     relatorio["respostas"].append(nome)
@@ -1989,7 +2394,13 @@ def notificar_sistema(titulo: str, texto: str) -> None:
         pass
 
 
-notificar_windows = notificar_sistema  # alias de compatibilidade
+def notificar_windows(titulo: str, texto: str) -> None:
+    """Alerta em todos os canais configurados: notificação do sistema, e-mail
+    (não depende do WhatsApp: avisa mesmo com a ponte caída) e Telegram."""
+    notificar_sistema(titulo, texto)
+    cfg = carregar_config()
+    enviar_email_alerta(titulo, texto, cfg)
+    notificar_telegram(titulo, texto, cfg)
 
 
 def montar_resumo(enviadas: list[str], sem_whatsapp: list[str], puladas: list[str],
@@ -2057,6 +2468,25 @@ def _envio_automatico(sessao: "SessaoWeb", contato: dict, mensagem: str,
     return sessao.ultimo_erro or SessaoWeb.TECNICO
 
 
+def _primeira_etapa(contato: dict) -> bool:
+    """Só recebeu a primeira mensagem (abertura curta ou texto completo)?"""
+    etapa, variante = contato.get("etapa") or "", contato.get("variante") or ""
+    return etapa in ("", "abertura") or (etapa == "apresentacao" and variante != "curta")
+
+
+def operador_assumiu(bolhas: list[dict], enviadas: list[str], desde: datetime) -> bool:
+    """Há mensagem NOSSA na conversa, depois do último envio do bot, que não
+    saiu do bot (não está no histórico): o operador respondeu pelo celular."""
+    eu = next((b["remetente"] for b in bolhas
+               if any(texto_confere(b["texto"], e) for e in enviadas)), None)
+    if eu is None:
+        return False
+    return any(b["remetente"] == eu and b["quando"]
+               and (b["quando"] - desde).total_seconds() > 60
+               and not any(texto_confere(b["texto"], e) for e in enviadas)
+               for b in bolhas)
+
+
 def _segunda_etapa(contato: dict) -> str | None:
     """Qual mensagem automática a pessoa recebe ao responder, se alguma:
 
@@ -2080,10 +2510,16 @@ def executar_acoes(relatorio: dict, planilha: Planilha, sessao: "SessaoWeb",
     - "apresentacao": pessoa respondeu à abertura curta -> envia o texto completo;
     - "resumo": pessoa respondeu à mensagem completa -> envia o resumo prometido;
     - "despedida": pessoa disse que não tem interesse -> agradece, formal (uma vez);
-    - "menu": robô com menu -> escolhe "falar com atendente" (uma vez por clínica).
+    - "menu": robô com menu -> escolhe "falar com atendente" (uma vez por clínica);
+    - "identificacao": robô pede nome/motivo -> diz quem é e o assunto (uma vez);
+    - "email": pediu a proposta por e-mail -> confirma, cria o rascunho no Gmail
+      (ou manda o texto pronto no aviso) e avisa o operador;
+    - "indicacao": repassou o cartão de contato da gestão -> agradece e agenda
+      a ação "gestor", que apresenta a proposta ao indicado.
     """
     feitos: list[str] = []
     por_tel = {c["telefone"]: c for c in planilha.contatos}
+    gestor_extra: dict[str, tuple[str, str]] = {}  # tel do gestor -> (nome, tel da clínica)
     for tipo, tel, dado in relatorio.get("acoes", []):
         contato = por_tel.get(tel)
         if contato is None:
@@ -2109,6 +2545,68 @@ def executar_acoes(relatorio: dict, planilha: Planilha, sessao: "SessaoWeb",
             problema = validar_mensagem(mensagem, contato, "despedida")
             if problema:
                 _registrar(f"[PULADO] despedida para {nome}: {problema}")
+                continue
+        elif tipo == "identificacao":
+            if contato.get("menu"):
+                continue
+            mensagem = montar_identificacao(contato, mensagens)
+            problema = validar_mensagem(mensagem, contato, "identificacao")
+            if problema:
+                _registrar(f"[PULADO] identificação para {nome}: {problema}")
+                continue
+        elif tipo == "email":
+            email = str(dado)
+            # Grava antes de enviar: se o WhatsApp falhar, a próxima leitura não
+            # cria outro rascunho para o mesmo e-mail.
+            contato["email"], contato["etapa"] = email, "email"
+            contato["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
+            planilha.salvar()
+            assunto, corpo = montar_email_proposta(
+                contato, mensagens, getattr(args, "resumo_para", "") or "")
+            cfg = carregar_config()
+            if cfg.get("email_envio_automatico"):
+                # Envio automático: sai agora, ou fica "pendente" e sai assim
+                # que a senha de app for configurada (enviar_emails_pendentes).
+                contato["email_enviado"] = "pendente"
+                planilha.salvar()
+                if email_configurado(cfg) and enviar_email(email, assunto, corpo, cfg):
+                    contato["email_enviado"] = datetime.now().isoformat(timespec="seconds")
+                    planilha.salvar()
+                    _registrar(f"[E-MAIL] Proposta enviada para {nome} ({email}).")
+                    relatorio.setdefault("avisos", []).append(
+                        f"📧 {nome} pediu a proposta por e-mail: já enviei para {email}.")
+                else:
+                    relatorio.setdefault("avisos", []).append(
+                        f"📧 {nome} pediu a proposta por e-mail ({email}). Ela sai "
+                        "automaticamente assim que a senha de app do Gmail estiver no "
+                        "config.local.json (email_senha_app).")
+            elif criar_rascunho_gmail(email, assunto, corpo, cfg):
+                relatorio.setdefault("avisos", []).append(
+                    f"📧 {nome} pediu a proposta por e-mail ({email}). O rascunho já "
+                    "está no seu Gmail: é só revisar e clicar em Enviar.")
+            else:
+                relatorio.setdefault("avisos", []).append(
+                    f"📧 {nome} pediu a proposta por e-mail: {email}\n"
+                    f"Assunto: {assunto}\n\n{corpo}")
+            mensagem = montar_confirmacao_email(contato, mensagens, email)
+            problema = validar_mensagem(mensagem, contato, "email")
+            if problema:
+                _registrar(f"[PULADO] confirmação de e-mail para {nome}: {problema}")
+                continue
+        elif tipo == "indicacao":
+            nome_ind, numero_ind = dado
+            mensagem = montar_agradecimento_indicacao(contato, mensagens, nome_ind)
+            problema = validar_mensagem(mensagem, contato, "indicacao")
+            if problema:
+                _registrar(f"[PULADO] agradecimento de indicação para {nome}: {problema}")
+                continue
+        elif tipo == "gestor":
+            nome_ind, tel_origem = gestor_extra.get(tel, ("", ""))
+            origem = por_tel.get(tel_origem) or contato
+            mensagem = montar_abertura_indicado({"nome_indicado": nome_ind}, origem, mensagens)
+            problema = validar_mensagem(mensagem, contato, "gestor")
+            if problema:
+                _registrar(f"[PULADO] mensagem ao gestor indicado ({nome}): {problema}")
                 continue
         else:
             mensagem = str(dado)
@@ -2142,38 +2640,102 @@ def executar_acoes(relatorio: dict, planilha: Planilha, sessao: "SessaoWeb",
             contato["etapa"] = "despedida"  # status continua nao_contatar
             contato["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
             feitos.append(f"agradecimento final enviado para {nome} (sem interesse)")
+        elif tipo == "identificacao":
+            contato["menu"] = "respondido"
+            feitos.append(f"identificação (nome e motivo) enviada ao robô de {nome}")
+        elif tipo == "email":
+            feitos.append(f"confirmação de envio por e-mail ({dado}) para {nome}")
+        elif tipo == "indicacao":
+            nome_ind, numero_ind = dado
+            contato["etapa"] = "indicou"
+            gestor = {c: "" for c in planilha.colunas} | {
+                "clinica": f"{contato['clinica']} (gestão: {nome_ind})",
+                "bairro": contato.get("bairro", ""), "cidade": contato.get("cidade", ""),
+                "telefone": normalizar_telefone(numero_ind),
+                # "indicado" não entra na fila fria: se o envio falhar, o operador
+                # é avisado e decide (a mensagem fria perderia o contexto da indicação).
+                "segmento": contato.get("segmento", ""), "status": "indicado",
+                "variante": "completa", "indicado_por": contato["clinica"],
+                "versao_textos": str(mensagens.get("versao", "")),
+            }
+            planilha.adicionar(gestor)
+            por_tel[gestor["telefone"]] = gestor  # o mesmo objeto que é salvo
+            gestor_extra[gestor["telefone"]] = (nome_ind, tel)
+            relatorio["acoes"].append(("gestor", gestor["telefone"], None))
+            relatorio.setdefault("avisos", []).append(
+                f"🤝 {nome} indicou {nome_ind} (+{gestor['telefone']}) como responsável "
+                "pela gestão. Agradeci e vou apresentar a proposta a essa pessoa.")
+            feitos.append(f"agradecimento pela indicação enviado para {nome}")
+        elif tipo == "gestor":
+            marcar_enviado(contato, planilha, INICIAL, salvar=False)
+            contato["etapa"] = "resumo"  # já recebeu o conteúdo completo
+            feitos.append(f"apresentação enviada ao gestor indicado ({nome})")
+            pdf = demonstracao_pdf(mensagens)
+            if pdf is not None and not sessao.enviar_arquivo(pdf):
+                _registrar(f"[AVISO] {pdf.name} não anexado para {nome} — anexe manualmente")
         else:
             contato["menu"] = "respondido"
             feitos.append(f"opção {mensagem} (falar com atendente) escolhida no robô de {nome}")
         planilha.salvar()
         _registrar(f"[AÇÃO] {feitos[-1]}")
+    relatorio.setdefault("avisos", []).extend(
+        enviar_emails_pendentes(planilha, mensagens, getattr(args, "resumo_para", "") or ""))
     return feitos
+
+
+_FALHAS_EMAIL_REGISTRADAS: set[str] = set()
+
+
+def enviar_emails_pendentes(planilha: Planilha, mensagens: dict,
+                            meu_whatsapp: str = "") -> list[str]:
+    """Envia as propostas por e-mail que ficaram "pendente" (ex.: pedidas antes
+    de a senha de app existir). Chame com a trava de envio: ela impede que dois
+    processos mandem o mesmo e-mail. Retorna os avisos para o operador."""
+    cfg = carregar_config()
+    if not cfg.get("email_envio_automatico") or not email_configurado(cfg):
+        return []
+    avisos = []
+    for contato in planilha.contatos:
+        email = (contato.get("email") or "").strip()
+        if (not email or contato.get("email_enviado") != "pendente"
+                or contato.get("status") == NAO_CONTATAR):
+            continue
+        nome = nome_para_mensagem(contato["clinica"], contato.get("bairro", ""),
+                                  contato.get("cidade") or CIDADE_PADRAO)
+        assunto, corpo = montar_email_proposta(contato, mensagens, meu_whatsapp)
+        if enviar_email(email, assunto, corpo, cfg):
+            contato["email_enviado"] = datetime.now().isoformat(timespec="seconds")
+            planilha.salvar()
+            _registrar(f"[E-MAIL] Proposta enviada para {nome} ({email}).")
+            avisos.append(f"📧 Proposta enviada por e-mail para {nome} ({email}).")
+        elif email not in _FALHAS_EMAIL_REGISTRADAS:
+            _FALHAS_EMAIL_REGISTRADAS.add(email)  # registra uma vez; tenta de novo depois
+            _registrar(f"[E-MAIL] Falha ao enviar para {nome} ({email}); nova tentativa "
+                       "na próxima rodada. Confira a senha de app.")
+    return avisos
 
 
 def avisar_respostas(relatorio: dict, sessao: "SessaoWeb", destino: str | None) -> None:
     """Avisa NA HORA quando uma pessoa responde (WhatsApp do operador + Windows)."""
     respostas = relatorio.get("respostas_texto") or []
     optouts = relatorio.get("optouts") or []
-    if not respostas and not optouts:
+    avisos = relatorio.get("avisos") or []  # e-mail pedido, indicação, lead quente
+    if not respostas and not optouts and not avisos:
         return
     linhas = ["📩 Prospecção: clínica respondeu!", ""]
     for nome, texto in respostas:
         linhas.append(f"• {nome}: “{texto}”" if texto else f"• {nome}")
     for nome in optouts:
         linhas.append(f"• {nome}: pediu para não ser contatada (removida da fila)")
-    if respostas:
+    for aviso in avisos:
+        linhas += ["", aviso]
+    if respostas or avisos:
         linhas += ["", "Responda pelo WhatsApp para não esfriar a conversa."]
     texto = "\n".join(linhas)
     if destino:
         sessao.enviar(_resumo_contato(destino), texto, permitir_reenvio=True, confirmar=False)
-    if respostas:
-        detalhes = "\n".join(
-            f"• {nome}: “{msg}”" if msg else f"• {nome}"
-            for nome, msg in respostas
-        )
-        notificar_telegram("📩 Lead respondeu no WhatsApp", detalhes, carregar_config())
-    notificar_windows("Prospecção: clínica respondeu",
-                      ", ".join([n for n, _ in respostas] + optouts))
+    # Sistema + e-mail + Telegram (o texto completo vai junto).
+    notificar_windows("Prospecção: clínica respondeu", texto)
 
 
 def estatisticas_ab(contatos: list[dict], versao: str = "") -> str:
@@ -2213,11 +2775,9 @@ def rodar_acompanhamento(planilha: Planilha, args: argparse.Namespace,
     except EnvioEmAndamento as exc:
         _registrar(f"[ACOMPANHAMENTO] {exc}")
         return
-    sessao = SessaoWeb()
+    sessao = nova_sessao()
     try:
-        recarregada = carregar_planilha(planilha.caminho)
-        planilha.linhas, planilha.contatos, planilha.colunas = (
-            recarregada.linhas, recarregada.contatos, recarregada.colunas)
+        planilha.recarregar()
         relatorio = verificar_conversas(planilha, sessao)
         if relatorio["erro"]:
             _registrar(f"[ACOMPANHAMENTO] {relatorio['erro']}")
@@ -2230,6 +2790,315 @@ def rodar_acompanhamento(planilha: Planilha, args: argparse.Namespace,
     finally:
         sessao.fechar()
         trava.__exit__(None, None, None)
+
+
+def chave_numero(telefone: str) -> str:
+    """Identidade do número tolerante ao 9º dígito brasileiro.
+
+    O WhatsApp devolve 55 79 9xxxx-xxxx ou 55 79 xxxx-xxxx conforme a conta;
+    o CSV pode ter qualquer um dos dois. Compara país + DDD + 8 últimos dígitos.
+    """
+    n = re.sub(r"\D", "", telefone or "")
+    if n.startswith("55") and len(n) in (12, 13):
+        return n[:4] + n[-8:]
+    return n
+
+
+ARQUIVO_NUMEROS_PONTE = BASE_DIR / "ponte_whatsapp" / "dados" / "numeros_monitorados.json"
+PASTA_BACKUPS = BASE_DIR / "backups"
+BACKUPS_MANTIDOS = 30
+
+
+def escrever_numeros_monitorados(planilha: Planilha, extras: list[str] | None = None) -> bool:
+    """Diz à ponte quais conversas guardar: as das clínicas (e a do operador).
+
+    A ponte descarta todo o resto (conversas pessoais nunca vão para o disco).
+    Grava só se a lista mudou. Retorna True se gravou.
+    """
+    numeros = {normalizar_telefone(l.get("telefone", "")) for l in planilha.linhas}
+    numeros |= {normalizar_telefone(n) for n in (extras or []) if n}
+    numeros.discard("")
+    conteudo = json.dumps({"numeros": sorted(numeros)}, ensure_ascii=False, indent=0)
+    try:
+        if ARQUIVO_NUMEROS_PONTE.read_text(encoding="utf-8") == conteudo:
+            return False
+    except OSError:
+        pass
+    try:
+        ARQUIVO_NUMEROS_PONTE.parent.mkdir(parents=True, exist_ok=True)
+        temporario = ARQUIVO_NUMEROS_PONTE.with_suffix(".tmp")
+        temporario.write_text(conteudo, encoding="utf-8")
+        temporario.replace(ARQUIVO_NUMEROS_PONTE)
+        return True
+    except OSError as exc:
+        _registrar(f"[AVISO] Lista de números da ponte não gravada ({exc}).")
+        return False
+
+
+def fazer_backup_banco(agora: datetime | None = None) -> Path | None:
+    """Uma cópia por dia do prospeccao.db em backups/ (mantém as 30 mais novas).
+
+    Usa a API de backup do SQLite: a cópia é consistente mesmo com outro
+    processo gravando. Retorna o arquivo criado (None se já havia o de hoje).
+    """
+    if not banco.eh_banco(ARQUIVO_BANCO) or not Path(ARQUIVO_BANCO).exists():
+        return None
+    agora = agora or datetime.now()
+    destino = PASTA_BACKUPS / f"prospeccao_{agora:%Y-%m-%d}.db"
+    if destino.exists():
+        return None
+    import sqlite3
+    PASTA_BACKUPS.mkdir(exist_ok=True)
+    temporario = destino.with_suffix(".tmp")
+    origem = sqlite3.connect(str(ARQUIVO_BANCO))
+    copia = sqlite3.connect(str(temporario))
+    try:
+        origem.backup(copia)
+    finally:
+        copia.close()
+        origem.close()
+    temporario.replace(destino)
+    for antigo in sorted(PASTA_BACKUPS.glob("prospeccao_*.db"))[:-BACKUPS_MANTIDOS]:
+        antigo.unlink(missing_ok=True)
+    _registrar(f"[BACKUP] {destino.name} criado.")
+    return destino
+
+
+# Cliente esperando: depois de quanto tempo sem resposta (nossa ou do bot)
+# você é alertado. Nível 1 aos 30 min; nível 2 (insiste) às 2 h.
+SLA_MINUTOS = (30, 120)
+
+
+def clientes_esperando(planilha: Planilha, sessao, agora: datetime | None = None
+                       ) -> list[tuple[dict, dict, int, int]]:
+    """Clínicas cuja ÚLTIMA mensagem é delas, de uma pessoa, e está sem
+    resposta há mais de SLA_MINUTOS. Retorna (contato, bolha, nível, minutos)
+    só para o que ainda não foi alertado nesse nível."""
+    agora = agora or datetime.now()
+    esperando = []
+    for contato in planilha.contatos:
+        if contato.get("status") != ENVIADO:
+            continue
+        bolhas = ler_conversa(sessao, contato["telefone"])
+        if isinstance(bolhas, str) or not bolhas:
+            continue
+        bolhas = [b for b in bolhas if b.get("quando") and (b.get("texto") or "").strip()]
+        if not bolhas:
+            continue
+        ultima = bolhas[-1]
+        eu = next((b["remetente"] for b in bolhas if b["remetente"] == "eu"), "eu")
+        if ultima["remetente"] == eu:
+            continue  # a última palavra é nossa: ninguém esperando
+        nossas = [b for b in bolhas if b["remetente"] == eu and b["quando"] <= ultima["quando"]]
+        if nossas and (ultima["quando"] - nossas[-1]["quando"]).total_seconds() <= 30:
+            continue  # resposta automática imediata do robô deles
+        norm = _sem_acentos(ultima["texto"].lower())
+        if eh_cortesia(ultima["texto"]) or any(f in norm for f in FRASES_BOT):
+            continue
+        minutos = int((agora - ultima["quando"]).total_seconds() // 60)
+        nivel = sum(1 for limite in SLA_MINUTOS if minutos >= limite)
+        if not nivel:
+            continue
+        marca, _, nivel_antes = (contato.get("alerta_sla") or "").partition("|")
+        if marca == ultima["quando"].isoformat() and int(nivel_antes or 0) >= nivel:
+            continue
+        esperando.append((contato, ultima, nivel, minutos))
+    return esperando
+
+
+def varredura(planilha: Planilha, args: argparse.Namespace, mensagens: dict,
+              sessao=None) -> list[str] | None:
+    """Rede de segurança do vigia (a cada --varredura-min): confere TODAS as
+    conversas abertas, faz o que o bot sabe fazer e alerta você de quem está
+    esperando resposta. Pega o que a ponte não avisou (ex.: mensagem que chegou
+    antes de ela subir). Retorna as ações, ou None se a trava estava ocupada."""
+    try:
+        trava = TravaEnvio().__enter__()
+    except EnvioEmAndamento:
+        return None
+    sessao = sessao or nova_sessao()
+    try:
+        planilha.recarregar()
+        relatorio = verificar_conversas(planilha, sessao, max_conversas=200)
+        if relatorio["erro"]:
+            _registrar(f"[VARREDURA] {relatorio['erro']}")
+            notificar_windows("Prospecção: atenção", relatorio["erro"])
+            return []
+        feitos = executar_acoes(relatorio, planilha, sessao, mensagens, args)
+        for contato, bolha, nivel, minutos in clientes_esperando(planilha, sessao):
+            nome = nome_para_mensagem(contato["clinica"], contato.get("bairro", ""),
+                                      contato.get("cidade") or CIDADE_PADRAO)
+            espera = f"{minutos // 60} h {minutos % 60} min" if minutos >= 60 else f"{minutos} min"
+            relatorio["avisos"].append(
+                f"{'⏰' if nivel == 1 else '🚨'} {nome} está esperando resposta há {espera}"
+                f"{'' if nivel == 1 else ' (2º alerta)'}: “{bolha['texto'][:300]}”")
+            contato["alerta_sla"] = f"{bolha['quando'].isoformat()}|{nivel}"
+            planilha.salvar()
+            _registrar(f"[ESPERANDO] {nome}: {espera} sem resposta (alerta {nivel}).")
+        avisar_respostas(relatorio, sessao, getattr(args, "resumo_para", None))
+        if feitos:
+            _registrar(f"[VARREDURA] {len(feitos)} ação(ões).")
+        return feitos
+    finally:
+        sessao.fechar()
+        trava.__exit__(None, None, None)
+
+
+def _emails_pendentes_vigia(planilha: Planilha, args: argparse.Namespace,
+                            mensagens: dict) -> None:
+    """No vigia: e-mails pendentes saem assim que a senha de app aparecer."""
+    if not any(c.get("email_enviado") == "pendente" for c in planilha.contatos):
+        return
+    try:
+        trava = TravaEnvio().__enter__()
+    except EnvioEmAndamento:
+        return  # o envio diário também tenta
+    try:
+        avisos = enviar_emails_pendentes(planilha, mensagens,
+                                         getattr(args, "resumo_para", "") or "")
+        if avisos:
+            sessao = nova_sessao()
+            try:
+                avisar_respostas({"avisos": avisos}, sessao,
+                                 getattr(args, "resumo_para", None))
+            finally:
+                sessao.fechar()
+    finally:
+        trava.__exit__(None, None, None)
+
+
+def processar_vigia(planilha: Planilha, args: argparse.Namespace, mensagens: dict,
+                    telefones: set[str], sessao=None,
+                    textos: dict[str, list[str]] | None = None) -> list[str] | None:
+    """Lê e responde só as conversas que acabaram de receber mensagem.
+
+    Quem JÁ conversou com a gente (resposta "respondeu") e volta a escrever é
+    lead quente: o operador é avisado na hora com o trecho, salvo cortesia
+    ("Disponha!"). `textos`: o que cada número acabou de mandar.
+    Retorna as ações feitas, ou None se outro envio estava rodando (tente depois).
+    """
+    try:
+        trava = TravaEnvio().__enter__()
+    except EnvioEmAndamento:
+        return None
+    sessao = sessao or nova_sessao()
+    try:
+        planilha.recarregar()
+        por_tel = {c["telefone"]: c for c in planilha.contatos}
+        quentes = {t for t in telefones if por_tel.get(t, {}).get("resposta") == "respondeu"}
+        relatorio = verificar_conversas(planilha, sessao, somente=telefones,
+                                        incluir_respondidos=True)
+        if relatorio["erro"]:
+            _registrar(f"[VIGIA] {relatorio['erro']}")
+            notificar_windows("Prospecção: atenção", relatorio["erro"])
+            return []
+        feitos = executar_acoes(relatorio, planilha, sessao, mensagens, args)
+        com_acao = {tel for _, tel, _ in relatorio.get("acoes", [])}
+        for tel in sorted(quentes - com_acao):
+            novos = [t for t in (textos or {}).get(tel, []) if t.strip() and not eh_cortesia(t)]
+            if novos:
+                c = por_tel[tel]
+                nome = nome_para_mensagem(c["clinica"], c.get("bairro", ""),
+                                          c.get("cidade") or CIDADE_PADRAO)
+                relatorio["avisos"].append(f"🔥 {nome} voltou a escrever: “{novos[-1][:300]}”")
+        avisar_respostas(relatorio, sessao, getattr(args, "resumo_para", None))
+        return feitos
+    finally:
+        sessao.fechar()
+        trava.__exit__(None, None, None)
+
+
+def rodar_vigia(planilha: Planilha, args: argparse.Namespace, mensagens: dict,
+                cliente: ClientePonte | None = None, max_ciclos: int | None = None,
+                pausa: float = 15.0) -> None:
+    """Fica de olho na ponte e responde quem escreveu, em poucos minutos.
+
+    Cada mensagem recebida de uma clínica abordada agenda o processamento
+    daquele número para daqui a `--espera-min`..`--espera-max` segundos; uma
+    nova mensagem do mesmo número adia (a clínica costuma mandar várias bolhas
+    seguidas, e responder no mesmo segundo entrega que é automação).
+    Fora do dia útil/janela, só acumula: o que chegou é tratado ao reabrir.
+    """
+    cliente = cliente or ClientePonte()
+    cursor, inicio_ponte, avisou_parada = 0, None, False
+    pendentes: dict[str, float] = {}  # telefone do contato -> quando processar
+    textos_novos: dict[str, list[str]] = {}  # o que cada um mandou desde então
+    extras_ponte = [getattr(args, "resumo_para", None) or ""]
+    ultima_releitura = time.time()
+    proxima_varredura = 0.0  # a primeira roda logo ao abrir a janela
+    intervalo_varredura = max(1, getattr(args, "varredura_min", 15)) * 60
+    _registrar("[VIGIA] Iniciado (Ctrl+C para parar).")
+    escrever_numeros_monitorados(planilha, extras_ponte)
+    ciclos = 0
+    while max_ciclos is None or ciclos < max_ciclos:
+        ciclos += 1
+        try:
+            fazer_backup_banco()  # 1x por dia (não faz nada se o de hoje já existe)
+        except Exception as exc:  # noqa: BLE001 - backup nunca derruba o vigia
+            _registrar(f"[BACKUP] Falhou: {exc}")
+        try:
+            dados = cliente.eventos(cursor)
+        except (PonteIndisponivel, ErroPonte) as exc:
+            if not avisou_parada:
+                _registrar(f"[VIGIA] Ponte indisponível ({exc}); tentando de novo...")
+                notificar_windows("Prospecção: ponte parada",
+                                  "Inicie: node ponte_whatsapp/ponte.js")
+                avisou_parada = True
+            time.sleep(pausa)
+            continue
+        if avisou_parada:
+            _registrar("[VIGIA] Ponte de volta.")
+            avisou_parada = False
+        if dados.get("inicio") != inicio_ponte:  # ponte (re)iniciou: lê tudo de novo
+            if inicio_ponte is not None:
+                inicio_ponte, cursor = dados.get("inicio"), 0
+                continue
+            inicio_ponte = dados.get("inicio")
+        # Relê quando chega mensagem e a cada 10 min (minerador/envio diário
+        # podem ter incluído clínicas novas, que a ponte precisa conhecer).
+        if dados.get("eventos") or time.time() - ultima_releitura > 600:
+            try:
+                planilha.recarregar()
+                ultima_releitura = time.time()
+                escrever_numeros_monitorados(planilha, extras_ponte)
+                _emails_pendentes_vigia(planilha, args, mensagens)
+            except Exception as exc:  # noqa: BLE001 - banco ocupado; usa o anterior
+                _registrar(f"[VIGIA] Contatos não relidos ({exc}).")
+        por_chave = {chave_numero(c["telefone"]): c for c in planilha.contatos
+                     if c["status"] == ENVIADO}
+        for evento in dados.get("eventos", []):
+            cursor = max(cursor, int(evento.get("seq", 0)))
+            contato = por_chave.get(chave_numero(evento.get("numero", "")))
+            if contato is None:
+                continue  # conversa pessoal ou clínica fora da prospecção
+            atraso = random.randint(args.espera_min, max(args.espera_min, args.espera_max))
+            pendentes[contato["telefone"]] = time.time() + atraso
+            textos_novos.setdefault(contato["telefone"], []).append(evento.get("texto") or "")
+            _registrar(f"[VIGIA] {contato['clinica'][:40]} escreveu; "
+                       f"respondo em ~{atraso // 60} min {atraso % 60} s.")
+        agora = datetime.now()
+        no_horario = dia_util(agora) and dentro_da_janela(args.hora_inicio, args.hora_fim, agora)
+        if no_horario and time.time() >= proxima_varredura:
+            feitos_v = varredura(planilha, args, mensagens)
+            # Trava ocupada (envio diário): tenta de novo em 1 min.
+            proxima_varredura = time.time() + (60 if feitos_v is None else intervalo_varredura)
+        if pendentes and no_horario:
+            prontos = {t for t, quando in pendentes.items() if quando <= time.time()}
+            if prontos:
+                feitos = processar_vigia(planilha, args, mensagens, prontos,
+                                         textos={t: list(textos_novos.get(t, []))
+                                                 for t in prontos})
+                if feitos is None:  # envio diário rodando: tenta em 2 min
+                    for t in prontos:
+                        pendentes[t] = time.time() + 120
+                else:
+                    for t in prontos:
+                        pendentes.pop(t, None)
+                        textos_novos.pop(t, None)
+                    _registrar(f"[VIGIA] {len(prontos)} conversa(s) tratada(s), "
+                               f"{len(feitos)} ação(ões).")
+        if max_ciclos is None or ciclos < max_ciclos:
+            time.sleep(pausa)
 
 
 def followups_hoje() -> int:
@@ -2285,6 +3154,22 @@ def rodar_automatico(planilha: Planilha, args: argparse.Namespace,
         return 0
 
     try:
+        fazer_backup_banco()  # antes de mexer em qualquer contato
+    except Exception as exc:  # noqa: BLE001
+        _registrar(f"[BACKUP] Falhou: {exc}")
+    if MOTOR == "api":
+        # Confere a ponte ANTES: sem ela, nada sai, e o aviso precisa chegar por
+        # outro canal (e-mail/sistema), já que o WhatsApp é que está fora.
+        situacao = SessaoAPI().healthcheck()["status"]
+        if situacao != "conectado":
+            detalhe = (f"Ponte do WhatsApp: {situacao}. Nenhuma mensagem foi enviada. "
+                       "Veja ponte_whatsapp/ponte.log; se pedir QR Code, apague "
+                       "ponte_whatsapp/.auth_baileys e escaneie de novo.")
+            _registrar(f"[AUTO] {detalhe}")
+            notificar_windows("Prospecção: envio do dia NÃO rodou", detalhe)
+            return 0
+
+    try:
         trava = TravaEnvio().__enter__()
     except EnvioEmAndamento as exc:
         _registrar(f"[AUTO] {exc}")
@@ -2298,13 +3183,11 @@ def rodar_automatico(planilha: Planilha, args: argparse.Namespace,
     parada: str | None = None
     verificacao: dict | None = None
     acoes_feitas: list[str] = []
-    sessao = SessaoWeb()
+    sessao = nova_sessao()
     try:
         # Relê o CSV já com a trava: durante o atraso aleatório o minerador pode
         # ter incluído contatos — salvar a versão antiga os apagaria.
-        recarregada = carregar_planilha(planilha.caminho)
-        planilha.linhas, planilha.contatos, planilha.colunas = (
-            recarregada.linhas, recarregada.contatos, recarregada.colunas)
+        planilha.recarregar()
         cota = args.limite_dia - envios_hoje()
         abertas_hoje = getattr(args, "abertas_hoje", False)
         candidatos = [c for c in planilha.contatos
@@ -2480,7 +3363,9 @@ def _criar_parser() -> argparse.ArgumentParser:
         description="Prospecção B2B human-in-the-loop para clínicas (WhatsApp)."
     )
     parser.add_argument("--arquivo", default=str(ARQUIVO_CSV),
-                        help="Caminho do CSV de prospecção (padrão: prospeccao.csv)")
+                        help="Contatos: banco .db (padrão: prospeccao.db) ou um CSV")
+    parser.add_argument("--exportar-csv", metavar="ARQUIVO",
+                        help="Exporta os contatos do banco para um CSV (Excel) e sai")
     parser.add_argument("--mensagens", default=str(ARQUIVO_MENSAGENS),
                         help="JSON com os textos/spintax (padrão: mensagens.json)")
     parser.add_argument("--modo", choices=["manual", "web", "preview"],
@@ -2551,6 +3436,20 @@ def _criar_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reset", action="store_true",
                         help="Reabre como 'pendente' quem recebeu e não respondeu "
                              "(nunca reabre opt-out nem quem respondeu)")
+    parser.add_argument("--motor", choices=["web", "api"], default=None,
+                        help="Como falar com o WhatsApp: 'web' (Chrome/Selenium) ou 'api' "
+                             "(ponte Baileys em ponte_whatsapp/). Padrão: 'motor' do "
+                             "config.local.json, senão 'web'")
+    parser.add_argument("--vigiar", action="store_true",
+                        help="Fica rodando: responde em poucos minutos quem escrever "
+                             "(exige --motor api e a ponte rodando)")
+    parser.add_argument("--espera-min", type=int, default=60,
+                        help="Vigia: espera mínima (s) antes de responder (padrão: 60)")
+    parser.add_argument("--espera-max", type=int, default=180,
+                        help="Vigia: espera máxima (s) antes de responder (padrão: 180)")
+    parser.add_argument("--varredura-min", type=int, default=15,
+                        help="Vigia: a cada quantos minutos confere TODAS as conversas e "
+                             "alerta quem está esperando resposta (padrão: 15)")
     return parser
 
 
@@ -2558,8 +3457,13 @@ def main() -> None:
     parser = _criar_parser()
     args = parser.parse_args()
 
-    global JANELA_VISIVEL
+    global JANELA_VISIVEL, MOTOR
     JANELA_VISIVEL = bool(args.mostrar_janela or args.conectar)
+    if args.motor:
+        MOTOR = args.motor
+    if args.vigiar and MOTOR != "api":
+        parser.error("--vigiar exige o motor 'api' (use --motor api ou "
+                     "\"motor\": \"api\" no config.local.json)")
 
     if args.preview:
         args.modo = "preview"
@@ -2572,7 +3476,13 @@ def main() -> None:
         print(f"[ERRO] Não foi possível carregar os textos: {exc}")
         sys.exit(1)
 
+    if Path(args.arquivo) == ARQUIVO_BANCO:
+        garantir_banco()
     planilha = carregar_planilha(Path(args.arquivo))
+    if args.exportar_csv:
+        exportar_csv(planilha, Path(args.exportar_csv))
+        print(f"[OK] {len(planilha.linhas)} contato(s) exportados para {args.exportar_csv}")
+        return
     contatos = planilha.contatos
 
     if args.automatico:
@@ -2581,11 +3491,21 @@ def main() -> None:
     if args.acompanhar:
         rodar_acompanhamento(planilha, args, mensagens)
         return
+    if args.vigiar:
+        try:
+            rodar_vigia(planilha, args, mensagens)
+        except KeyboardInterrupt:
+            _registrar("[VIGIA] Encerrado pelo operador.")
+        return
     if args.conectar:
+        if MOTOR == "api":
+            print("Motor 'api': rode `node ponte_whatsapp/ponte.js` e escaneie o QR "
+                  "Code que aparecer (WhatsApp > Aparelhos conectados).")
+            return
         conectar_whatsapp()
         return
     if args.healthcheck:
-        sessao = SessaoWeb()
+        sessao = nova_sessao()
         try:
             res = sessao.healthcheck()
         except Exception as exc:  # noqa: BLE001
@@ -2598,7 +3518,7 @@ def main() -> None:
             print(f"  - {k}: {qtd} elemento(s)")
         return
     if args.verificar:
-        sessao = SessaoWeb()
+        sessao = nova_sessao()
         try:
             rel = verificar_conversas(planilha, sessao)
         except EnvioEmAndamento as exc:

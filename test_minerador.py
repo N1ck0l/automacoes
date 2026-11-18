@@ -13,6 +13,7 @@ from contextlib import redirect_stdout
 import unittest
 from pathlib import Path
 
+import testes_seguros  # noqa: F401  (blindagem: ver testes_seguros.py)
 import minerador_maps as mm
 import prospeccao_whatsapp as pw
 

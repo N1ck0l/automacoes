@@ -15,3 +15,17 @@ logs/
 prospeccao.csv
 historico_envios.jsonl
 config.local.json
+
+# Ponte Baileys (ponte_whatsapp/): dependências, sessão do WhatsApp e mensagens
+ponte_whatsapp/node_modules/
+ponte_whatsapp/.auth_baileys/
+ponte_whatsapp/dados/
+ponte_whatsapp/qr.png
+ponte_whatsapp/ponte.log
+
+# Banco SQLite (contatos e histórico) e backup dos arquivos antigos
+prospeccao.db
+prospeccao.db-wal
+prospeccao.db-shm
+backup_pre_sqlite/
+backups/
